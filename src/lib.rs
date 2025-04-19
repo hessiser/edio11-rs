@@ -2,7 +2,6 @@
 mod backup;
 mod errors;
 pub mod input;
-mod shaders;
 
 use std::{
     mem,
@@ -15,7 +14,6 @@ use egui::{Context, PlatformOutput};
 use errors::OverlayError;
 use input::{InputHandler, InputResult};
 use retour::static_detour;
-use shaders::{CompiledShaders, INPUT_ELEMENTS_DESC};
 use windows::{
     core::HRESULT,
     Win32::{
@@ -53,8 +51,6 @@ struct OverlayHandlerInner {
     pub egui_renderer: egui_directx11::Renderer,
     pub input_handler: InputHandler,
     pub window_process_callback: WNDPROC,
-    input_layout: ID3D11InputLayout,
-    shaders: CompiledShaders,
 }
 
 struct OverlayHandler<T: Overlay + ?Sized> {
@@ -178,19 +174,9 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                 ))
             };
 
-            let shaders = CompiledShaders::new(&device).unwrap();
-            let mut input_layout: Option<ID3D11InputLayout> = None;
-            unsafe { 
-                device.CreateInputLayout(&INPUT_ELEMENTS_DESC, shaders.bytecode(), Some(&mut input_layout)).unwrap();
-                device_context.VSSetShader(&shaders.vertex, Some(&[]));
-                device_context.PSSetShader(&shaders.pixel, None);
-            }
-
             let inner = OverlayHandlerInner {
                 device_context,
-                shaders,
                 render_target: Some(render_target.into()),
-                input_layout: input_layout.unwrap(),
                 window_process_callback: window_process_target,
                 egui_renderer,
                 input_handler: InputHandler::new(hwnd),
@@ -210,12 +196,6 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                     });
 
                 self.backup.save(&inner.device_context);
-
-                unsafe {
-                    inner.device_context.IASetInputLayout(&inner.input_layout);
-                    inner.device_context.VSSetShader(&inner.shaders.vertex, None);
-                    inner.device_context.PSSetShader(&inner.shaders.pixel, None);    
-                };
 
                 let (renderer_output, platform_output, _) =
                     egui_directx11::split_output(egui_output);
