@@ -1,0 +1,27 @@
+[package]
+name = "edio11"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+egui = "0.31.1"
+egui-directx11 = "0.7.0"
+retour = { version = "0.3", features = ["static-detour"] }
+thiserror = "2.0.12"
+arboard = "3.5.0"
+log = "0.4.27"
+
+[dependencies.windows]
+version = "0.60.0"
+features = [
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Direct3D11",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_SystemServices",
+    "Wdk_System_SystemInformation",
+    "Win32_Graphics_Direct3D_Fxc"
+]
