@@ -11,16 +11,17 @@ use std::{
 use arboard::{Clipboard, ImageData};
 use backup::BackupState;
 use egui::{Context, PlatformOutput};
+use egui_directx11::Renderer;
 use errors::OverlayError;
 use input::{InputHandler, InputResult};
 use retour::static_detour;
 use windows::{
-    core::HRESULT,
+    core::{Interface, HRESULT},
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, WPARAM},
         Graphics::{
             Direct3D11::{
-                ID3D11Device, ID3D11DeviceContext, ID3D11InputLayout, ID3D11RenderTargetView, ID3D11Texture2D
+                ID3D11Device, ID3D11DeviceContext, ID3D11InputLayout, ID3D11RenderTargetView, ID3D11Texture2D, D3D11_TEXTURE2D_DESC
             },
             Dxgi::{Common::DXGI_FORMAT, IDXGISwapChain, IDXGISwapChain_Vtbl, DXGI_PRESENT},
         },
@@ -47,7 +48,7 @@ static_detour! {
 type WNDPROC = unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT;
 struct OverlayHandlerInner {
     pub device_context: ID3D11DeviceContext,
-    pub render_target: Option<Mutex<ID3D11RenderTargetView>>,
+    pub render_target: Option<ID3D11RenderTargetView>,
     pub egui_renderer: egui_directx11::Renderer,
     pub input_handler: InputHandler,
     pub window_process_callback: WNDPROC,
@@ -208,16 +209,13 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                 //         scale_factor
                 //     }
                 // };
-                if let Ok(render_target_lock) = render_target.try_lock() {
-                    let _ = inner.egui_renderer.render(
-                        &inner.device_context,
-                        &render_target_lock,
-                        &self.egui_ctx,
-                        renderer_output,
-                        1.0,
-                    );
-                }
-
+                let _ = inner.egui_renderer.render(
+                    &inner.device_context,
+                    &render_target,
+                    &self.egui_ctx,
+                    renderer_output,
+                    1.0,
+                );
 
                 self.backup.restore(&inner.device_context);
             } else {
@@ -316,9 +314,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
     ) -> HRESULT {
         if let Some(overlay_handler) = unsafe { &mut OVERLAY_HANDLER } {
             if let Some(inner) = &mut overlay_handler.inner.as_mut() {
-                // let swap_chain = unsafe { Self::get_swapchain_from_vtbl(&*swap_chain_vtbl) };
-                let x: &IDXGISwapChain = unsafe { mem::transmute(&swap_chain_vtbl) };
-
+                inner.render_target = None;
                 let result = Resize_Buffers_Detour.call(
                     swap_chain_vtbl,
                     buffer_count,
@@ -336,12 +332,13 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                     swap_chain_flags,
                 );
 
-                // drop(inner.render_target.take());
-                let device: ID3D11Device = unsafe { x.GetDevice().unwrap() };
-                let render_target =
-                    unsafe { Self::create_render_target_for_swap_chain(&device, x) }.unwrap();
+                let swap_chain: &IDXGISwapChain = unsafe { mem::transmute(&swap_chain_vtbl) };
+                let device = unsafe { inner.device_context.GetDevice().unwrap() };
 
-                inner.render_target = Some(render_target.into());
+                let render_target =
+                    unsafe { Self::create_render_target_for_swap_chain(&device, swap_chain).unwrap() };
+
+                inner.render_target = Some(render_target);
                 return result;
             }
         }

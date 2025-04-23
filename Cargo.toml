@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 egui = "0.31.1"
-# egui-directx11 = "0.7.0"
 egui-directx11 = { git = "https://github.com/hessiser/egui-directx11.git", rev = "14ea68d" }
 
 retour = { version = "0.3", features = ["static-detour"] }
