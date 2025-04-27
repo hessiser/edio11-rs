@@ -24,5 +24,6 @@ features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_System_SystemServices",
     "Wdk_System_SystemInformation",
-    "Win32_Graphics_Direct3D_Fxc"
+    "Win32_Graphics_Direct3D_Fxc",
+    "Win32_UI_HiDpi"
 ]

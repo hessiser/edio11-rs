@@ -1,31 +1,29 @@
 #![allow(dead_code)]
 use arboard::Clipboard;
 use egui::{
-    Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, RawInput, Rect, Theme, Vec2,
+    Context, Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, RawInput, Rect, Theme, Vec2
 };
 use windows::{
     Wdk::System::SystemInformation::NtQuerySystemTime,
     Win32::{
-        Foundation::{HWND, RECT},
-        System::SystemServices::{MK_CONTROL, MK_SHIFT},
-        UI::{
+        Foundation::{HWND, RECT}, Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST}, System::SystemServices::{MK_CONTROL, MK_SHIFT}, UI::{
             Input::KeyboardAndMouse::{
                 GetAsyncKeyState, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END,
                 VK_ESCAPE, VK_HOME, VK_INSERT, VK_LEFT, VK_LSHIFT, VK_NEXT, VK_PRIOR, VK_RETURN,
                 VK_RIGHT, VK_SPACE, VK_TAB, VK_UP,
-            },
-            WindowsAndMessaging::{
+            }, Shell::GetScaleFactorForMonitor, WindowsAndMessaging::{
                 GetClientRect, KF_REPEAT, WHEEL_DELTA, WM_CHAR, WM_KEYDOWN, WM_KEYUP,
                 WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN,
                 WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDBLCLK,
                 WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDBLCLK,
                 WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1, XBUTTON2,
-            },
-        },
+            }
+        }
     },
 };
 
 pub struct InputHandler {
+    pub ctx: Context,
     pub hwnd: HWND,
     pub events: Vec<Event>,
     pub modifiers: Option<Modifiers>,
@@ -58,8 +56,9 @@ impl InputResult {
 }
 
 impl InputHandler {
-    pub fn new(hwnd: HWND) -> Self {
+    pub fn new(hwnd: HWND, ctx: &Context) -> Self {
         Self {
+            ctx: ctx.clone(),
             hwnd,
             events: vec![],
             modifiers: None,
@@ -71,7 +70,7 @@ impl InputHandler {
             WM_MOUSEMOVE => {
                 self.alter_modifiers(get_mouse_modifiers(wparam));
 
-                self.events.push(Event::PointerMoved(get_pos(lparam)));
+                self.events.push(Event::PointerMoved(self.get_pos(lparam)));
                 InputResult::MouseMove
             }
             WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
@@ -79,7 +78,7 @@ impl InputHandler {
                 self.alter_modifiers(modifiers);
 
                 self.events.push(Event::PointerButton {
-                    pos: get_pos(lparam),
+                    pos: self.get_pos(lparam),
                     button: PointerButton::Primary,
                     pressed: true,
                     modifiers,
@@ -91,7 +90,7 @@ impl InputHandler {
                 self.alter_modifiers(modifiers);
 
                 self.events.push(Event::PointerButton {
-                    pos: get_pos(lparam),
+                    pos: self.get_pos(lparam),
                     button: PointerButton::Primary,
                     pressed: false,
                     modifiers,
@@ -103,7 +102,7 @@ impl InputHandler {
                 self.alter_modifiers(modifiers);
 
                 self.events.push(Event::PointerButton {
-                    pos: get_pos(lparam),
+                    pos: self.get_pos(lparam),
                     button: PointerButton::Secondary,
                     pressed: true,
                     modifiers,
@@ -115,7 +114,7 @@ impl InputHandler {
                 self.alter_modifiers(modifiers);
 
                 self.events.push(Event::PointerButton {
-                    pos: get_pos(lparam),
+                    pos: self.get_pos(lparam),
                     button: PointerButton::Secondary,
                     pressed: false,
                     modifiers,
@@ -127,7 +126,7 @@ impl InputHandler {
                 self.alter_modifiers(modifiers);
 
                 self.events.push(Event::PointerButton {
-                    pos: get_pos(lparam),
+                    pos: self.get_pos(lparam),
                     button: PointerButton::Middle,
                     pressed: true,
                     modifiers,
@@ -139,7 +138,7 @@ impl InputHandler {
                 self.alter_modifiers(modifiers);
 
                 self.events.push(Event::PointerButton {
-                    pos: get_pos(lparam),
+                    pos: self.get_pos(lparam),
                     button: PointerButton::Middle,
                     pressed: false,
                     modifiers,
@@ -151,7 +150,7 @@ impl InputHandler {
                 self.alter_modifiers(modifiers);
 
                 self.events.push(Event::PointerButton {
-                    pos: get_pos(lparam),
+                    pos: self.get_pos(lparam),
                     button: if (wparam as u32) >> 16 & (XBUTTON1 as u32) != 0 {
                         PointerButton::Extra1
                     } else if (wparam as u32) >> 16 & (XBUTTON2 as u32) != 0 {
@@ -169,7 +168,7 @@ impl InputHandler {
                 self.alter_modifiers(modifiers);
 
                 self.events.push(Event::PointerButton {
-                    pos: get_pos(lparam),
+                    pos: self.get_pos(lparam),
                     button: if (wparam as u32) >> 16 & (XBUTTON1 as u32) != 0 {
                         PointerButton::Extra1
                     } else if (wparam as u32) >> 16 & (XBUTTON2 as u32) != 0 {
@@ -284,12 +283,8 @@ impl InputHandler {
         RawInput {
             modifiers: self.modifiers.unwrap_or_default(),
             events: self.events.drain(..).collect::<Vec<Event>>(),
-            screen_rect: Some(self.get_screen_rect()),
+            screen_rect: Some(self.get_window_rect()),
             time: Some(Self::get_system_time()),
-            max_texture_side: None,
-            predicted_dt: 1. / 60.,
-            hovered_files: vec![],
-            dropped_files: vec![],
             focused: true,
             ..Default::default()
         }
@@ -310,33 +305,36 @@ impl InputHandler {
     }
 
     #[inline]
-    pub fn get_screen_size(&self) -> Pos2 {
+    pub fn get_window_size(&self) -> Vec2 {
         let mut rect = RECT::default();
         unsafe {
             GetClientRect(self.hwnd, &mut rect).unwrap();
-            }
+        }
 
-        Pos2::new(
+        // Divide by scale
+        Vec2::new(
             (rect.right - rect.left) as f32,
             (rect.bottom - rect.top) as f32,
-        )
+        )/self.ctx.pixels_per_point()
     }
 
     #[inline]
-    pub fn get_screen_rect(&self) -> Rect {
+    pub fn get_window_rect(&self) -> Rect {
         Rect {
             min: Pos2::ZERO,
-            max: self.get_screen_size(),
+            max: self.get_window_size().to_pos2(),
         }
     }
+
+    fn get_pos(&self, lparam: isize) -> Pos2 {
+        let x = (lparam & 0xFFFF) as i16 as f32;
+        let y = (lparam >> 16 & 0xFFFF) as i16 as f32;
+    
+        // Divide by scale
+        Pos2::new(x, y)/self.ctx.pixels_per_point()
+    }    
 }
 
-fn get_pos(lparam: isize) -> Pos2 {
-    let x = (lparam & 0xFFFF) as i16 as f32;
-    let y = (lparam >> 16 & 0xFFFF) as i16 as f32;
-
-    Pos2::new(x, y)
-}
 
 fn get_mouse_modifiers(wparam: usize) -> Modifiers {
     Modifiers {

@@ -10,7 +10,7 @@ use std::{
 
 use arboard::{Clipboard, ImageData};
 use backup::BackupState;
-use egui::{Context, PlatformOutput};
+use egui::{gui_zoom::kb_shortcuts, Context, PlatformOutput, Vec2};
 use egui_directx11::Renderer;
 use errors::OverlayError;
 use input::{InputHandler, InputResult};
@@ -18,15 +18,14 @@ use retour::static_detour;
 use windows::{
     core::{Interface, HRESULT},
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+        Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::{
             Direct3D11::{
                 ID3D11Device, ID3D11DeviceContext, ID3D11InputLayout, ID3D11RenderTargetView, ID3D11Texture2D, D3D11_TEXTURE2D_DESC
             },
-            Dxgi::{Common::DXGI_FORMAT, IDXGISwapChain, IDXGISwapChain_Vtbl, DXGI_PRESENT},
+            Dxgi::{Common::DXGI_FORMAT, IDXGISwapChain, IDXGISwapChain_Vtbl, DXGI_PRESENT}, Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT},
         },
-        UI::
-            WindowsAndMessaging::{SetWindowLongPtrW, GWLP_WNDPROC}
+        UI::{HiDpi::GetDpiForWindow, Shell::GetScaleFactorForMonitor, WindowsAndMessaging::{GetClientRect, GetSystemMetrics, SetWindowLongPtrW, GWLP_WNDPROC}}
         ,
     },
 };
@@ -52,6 +51,7 @@ struct OverlayHandlerInner {
     pub egui_renderer: egui_directx11::Renderer,
     pub input_handler: InputHandler,
     pub window_process_callback: WNDPROC,
+    hwnd: HWND,
 }
 
 struct OverlayHandler<T: Overlay + ?Sized> {
@@ -59,6 +59,7 @@ struct OverlayHandler<T: Overlay + ?Sized> {
     egui_ctx: egui::Context,
     backup: BackupState,
     overlay: Box<T>,
+    zoom_factor: f32
 }
 
 #[derive(Default)]
@@ -141,6 +142,9 @@ impl<T: Overlay + ?Sized> Overlay for Box<T> {
     }
 }
 
+const MIN_ZOOM_FACTOR: f32 = 0.2;
+const MAX_ZOOM_FACTOR: f32 = 5.0;    
+
 impl<T: Overlay + ?Sized> OverlayHandler<T> {
     // A convenience wrapper
     unsafe fn get_swapchain_from_vtbl(swap_chain_vtbl: &IDXGISwapChain_Vtbl) -> &IDXGISwapChain {
@@ -180,7 +184,8 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                 render_target: Some(render_target.into()),
                 window_process_callback: window_process_target,
                 egui_renderer,
-                input_handler: InputHandler::new(hwnd),
+                input_handler: InputHandler::new(hwnd, &self.egui_ctx),
+                hwnd
             };
 
             self.inner = Some(inner);
@@ -190,31 +195,73 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
     pub fn present(&mut self) {
         if let Some(inner) = &mut self.inner {
             if let Some(render_target) = &inner.render_target {
+                let pixels_per_point = unsafe {
+                    let monitor = MonitorFromWindow(inner.hwnd, MONITOR_DEFAULTTONEAREST);
+
+                    // Scale
+                    let scale_factor = GetScaleFactorForMonitor(monitor).unwrap().0/100;
+
+                    // Screen Size
+                    let mut monitor_info = MONITORINFO {
+                        cbSize: size_of::<MONITORINFO>() as _,
+                        ..Default::default()
+                    };
+                    GetMonitorInfoW(monitor, &raw mut monitor_info).unwrap();
+                    let width = monitor_info.rcMonitor.right - monitor_info.rcMonitor.left;
+                    let height = monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top;
+                    let screen_size = Vec2::new(width as f32, height as f32);
+                    
+                    // Window Size
+                    let mut rect = RECT::default();
+                    GetClientRect(inner.hwnd, &mut rect).unwrap();
+            
+                    let window_size = Vec2::new(
+                        (rect.right - rect.left) as f32,
+                        (rect.bottom - rect.top) as f32,
+                    );            
+
+                    let res_scale = window_size.length()/screen_size.length();
+                    scale_factor as f32 * res_scale
+                };
+
+                self.egui_ctx.set_pixels_per_point(pixels_per_point * self.zoom_factor);
+
                 let egui_output = self
                     .egui_ctx
                     .run(inner.input_handler.collect_input(), |ctx| {
+                        if ctx.input_mut(|i| i.consume_shortcut(&kb_shortcuts::ZOOM_RESET)) {
+                            self.zoom_factor = 1.0;
+                        } else {
+                            if ctx.input_mut(|i| i.consume_shortcut(&kb_shortcuts::ZOOM_IN))
+                                || ctx.input_mut(|i| i.consume_shortcut(&kb_shortcuts::ZOOM_IN_SECONDARY))
+                            {
+                                self.zoom_factor += 0.1;
+                                self.zoom_factor = self.zoom_factor.clamp(MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR);
+                                self.zoom_factor = (self.zoom_factor * 10.).round() / 10.;
+                            }
+                            if ctx.input_mut(|i| i.consume_shortcut(&kb_shortcuts::ZOOM_OUT)) {
+                                self.zoom_factor -= 0.1;
+                                self.zoom_factor = self.zoom_factor.clamp(MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR);
+                                self.zoom_factor = (self.zoom_factor * 10.).round() / 10.;
+                            }
+                        }
+                                    
                         self.overlay.update(ctx);
                     });
+                
 
                 self.backup.save(&inner.device_context);
 
                 let (renderer_output, platform_output, _) =
                     egui_directx11::split_output(egui_output);
-                Self::handle_platform_output(platform_output);
-                // let scale_factor = match unsafe { Self::scale_factor(inner) } {
-                //     Ok(v) => v.0 as f32,
-                //     Err(e) => {
-                //         let scale_factor = 1.0;
-                //         log::error!("`OverlayHandler::scale_factor` Error: {}. Defaulting to scale factor {}", e, scale_factor);
-                //         scale_factor
-                //     }
-                // };
+                Self::handle_platform_output(&self.egui_ctx, platform_output);
+
                 let _ = inner.egui_renderer.render(
                     &inner.device_context,
                     &render_target,
                     &self.egui_ctx,
                     renderer_output,
-                    1.0,
+                    1.0
                 );
 
                 self.backup.restore(&inner.device_context);
@@ -228,21 +275,17 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
         }
     }
 
-    // unsafe fn scale_factor(
-    //     inner: &OverlayHandlerInner,
-    // ) -> windows::core::Result<Common::DEVICE_SCALE_FACTOR> {
-    //     let hmon = MonitorFromWindow(inner.hwnd, MONITOR_DEFAULTTONEAREST);
-    //     GetScaleFactorForMonitor(hmon)
-    // }
-
     // Only supporting WindowsOS
-    fn handle_platform_output(platform_output: PlatformOutput) {
+    fn handle_platform_output(ctx: &egui::Context, platform_output: PlatformOutput) {
         let mut clipboard = Clipboard::new().unwrap();
 
         for cmd in platform_output.commands {
-            let error = match cmd {
-                egui::OutputCommand::CopyText(text) => clipboard.set_text(text),
-                egui::OutputCommand::CopyImage(color_image) => clipboard.set_image(ImageData {
+            match cmd {
+                egui::OutputCommand::CopyText(text) => {
+                    clipboard.set_text(text).unwrap();
+                },
+                egui::OutputCommand::CopyImage(color_image) => {
+                    clipboard.set_image(ImageData {
                     width: color_image.width(),
                     height: color_image.height(),
                     bytes: color_image
@@ -251,14 +294,12 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                         .map(|pixel| pixel.to_array())
                         .flatten()
                         .collect(),
-                }),
-                egui::OutputCommand::OpenUrl(_open_url) => Err(arboard::Error::Unknown {
-                    description: "egui::OutputCommand::OpenUrl` is not supported.".to_string(),
-                }),
+                    }).unwrap();
+                },
+                egui::OutputCommand::OpenUrl(open_url) =>{
+                    ctx.open_url(open_url)
+                },
             };
-            if let Err(error) = error {
-                log::error!("{}", error);
-            }
         }
     }
 
@@ -433,6 +474,7 @@ pub fn set_overlay(
                 egui_ctx,
                 backup: BackupState::default(),
                 overlay: Box::new(overlay),
+                zoom_factor: 1.0
             };
             OVERLAY_HANDLER = Some(overlay_handler);
             Present_Detour
