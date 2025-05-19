@@ -285,7 +285,7 @@ impl InputHandler {
             events: self.events.drain(..).collect::<Vec<Event>>(),
             screen_rect: Some(self.get_window_rect()),
             time: Some(Self::get_system_time()),
-            system_theme: get_system_theme(),
+            system_theme: Self::get_system_theme(),
             focused: true,
             ..Default::default()
         }
@@ -305,18 +305,16 @@ impl InputHandler {
         (time as f64) / 10_000_000.
     }
 
-    fn get_system_theme() -> Option<Theme> {
-        let key = windows_registry::CURRENT_USER
-            .open(
-                "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-            )
-            .ok()?;
+    pub fn get_system_theme() -> Option<Theme> {
 
-        Some(if key.get_u32("AppsUseLightTheme").ok()? == 1 {
-            Theme::Light
-        } else {
-            Theme::Dark
-        })
+        match dark_light::detect() {
+            Ok(mode) => match mode {
+                dark_light::Mode::Dark => Some(Theme::Dark),
+                dark_light::Mode::Light => Some(Theme::Light),
+                dark_light::Mode::Unspecified => None,
+            },
+            Err(_) => None,
+        }
     }
 
 

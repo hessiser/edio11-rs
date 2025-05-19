@@ -3,31 +3,30 @@ mod backup;
 mod errors;
 pub mod input;
 
-use std::{
-    mem,
-    sync::{Mutex, Once},
-};
+use std::{mem, sync::Once};
 
 use arboard::{Clipboard, ImageData};
 use backup::BackupState;
-use egui::{gui_zoom::kb_shortcuts, Context, PlatformOutput, Vec2};
-use egui_directx11::Renderer;
+use egui::{Context, PlatformOutput, RawInput, Vec2, gui_zoom::kb_shortcuts};
 use errors::OverlayError;
 use input::{InputHandler, InputResult};
 use retour::static_detour;
 use windows::{
-    core::{Interface, HRESULT},
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::{
             Direct3D11::{
-                ID3D11Device, ID3D11DeviceContext, ID3D11InputLayout, ID3D11RenderTargetView, ID3D11Texture2D, D3D11_TEXTURE2D_DESC
+                ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11Texture2D,
             },
-            Dxgi::{Common::DXGI_FORMAT, IDXGISwapChain, IDXGISwapChain_Vtbl, DXGI_PRESENT}, Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT},
+            Dxgi::{Common::DXGI_FORMAT, DXGI_PRESENT, IDXGISwapChain, IDXGISwapChain_Vtbl},
+            Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow},
         },
-        UI::{HiDpi::GetDpiForWindow, Shell::GetScaleFactorForMonitor, WindowsAndMessaging::{GetClientRect, GetSystemMetrics, SetWindowLongPtrW, GWLP_WNDPROC}}
-        ,
+        UI::{
+            Shell::GetScaleFactorForMonitor,
+            WindowsAndMessaging::{GWLP_WNDPROC, GetClientRect, SetWindowLongPtrW},
+        },
     },
+    core::HRESULT,
 };
 
 static mut OVERLAY_HANDLER: Option<OverlayHandler<Box<dyn Overlay>>> = None;
@@ -59,7 +58,7 @@ struct OverlayHandler<T: Overlay + ?Sized> {
     egui_ctx: egui::Context,
     backup: BackupState,
     overlay: Box<T>,
-    zoom_factor: f32
+    zoom_factor: f32,
 }
 
 #[derive(Default)]
@@ -96,7 +95,8 @@ pub trait Overlay {
         height: u32,
         new_format: DXGI_FORMAT,
         swap_chain_flags: u32,
-    ) {}
+    ) {
+    }
     fn window_process(
         &mut self,
         input: &InputResult,
@@ -143,15 +143,9 @@ impl<T: Overlay + ?Sized> Overlay for Box<T> {
 }
 
 const MIN_ZOOM_FACTOR: f32 = 0.2;
-const MAX_ZOOM_FACTOR: f32 = 5.0;    
+const MAX_ZOOM_FACTOR: f32 = 5.0;
 
 impl<T: Overlay + ?Sized> OverlayHandler<T> {
-    // A convenience wrapper
-    unsafe fn get_swapchain_from_vtbl(swap_chain_vtbl: &IDXGISwapChain_Vtbl) -> &IDXGISwapChain {
-        // &&IDXGISwapChain_Vtbl
-        std::mem::transmute(&swap_chain_vtbl)
-    }
-
     #[inline]
     // lazy static constructor
     fn lazy_initialize(&mut self, swap_chain: &IDXGISwapChain) {
@@ -185,7 +179,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                 window_process_callback: window_process_target,
                 egui_renderer,
                 input_handler: InputHandler::new(hwnd, &self.egui_ctx),
-                hwnd
+                hwnd,
             };
 
             self.inner = Some(inner);
@@ -199,7 +193,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                     let monitor = MonitorFromWindow(inner.hwnd, MONITOR_DEFAULTTONEAREST);
 
                     // Scale
-                    let scale_factor = GetScaleFactorForMonitor(monitor).unwrap().0/100;
+                    let scale_factor = GetScaleFactorForMonitor(monitor).unwrap().0 / 100;
 
                     // Screen Size
                     let mut monitor_info = MONITORINFO {
@@ -210,45 +204,53 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                     let width = monitor_info.rcMonitor.right - monitor_info.rcMonitor.left;
                     let height = monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top;
                     let screen_size = Vec2::new(width as f32, height as f32);
-                    
+
                     // Window Size
                     let mut rect = RECT::default();
                     GetClientRect(inner.hwnd, &mut rect).unwrap();
-            
+
                     let window_size = Vec2::new(
                         (rect.right - rect.left) as f32,
                         (rect.bottom - rect.top) as f32,
-                    );            
+                    );
 
-                    let res_scale = window_size.length()/screen_size.length();
+                    let res_scale = window_size.length() / screen_size.length();
                     scale_factor as f32 * res_scale
                 };
 
-                self.egui_ctx.set_pixels_per_point(pixels_per_point * self.zoom_factor);
+                if pixels_per_point > 0.0 {
+                    self.egui_ctx.set_pixels_per_point(pixels_per_point * self.zoom_factor);
+                }
 
                 let egui_output = self
                     .egui_ctx
                     .run(inner.input_handler.collect_input(), |ctx| {
                         if ctx.input_mut(|i| i.consume_shortcut(&kb_shortcuts::ZOOM_RESET)) {
                             self.zoom_factor = 1.0;
+                            self.egui_ctx.set_zoom_factor(self.zoom_factor);
                         } else {
                             if ctx.input_mut(|i| i.consume_shortcut(&kb_shortcuts::ZOOM_IN))
-                                || ctx.input_mut(|i| i.consume_shortcut(&kb_shortcuts::ZOOM_IN_SECONDARY))
+                                || ctx.input_mut(|i| {
+                                    i.consume_shortcut(&kb_shortcuts::ZOOM_IN_SECONDARY)
+                                })
                             {
                                 self.zoom_factor += 0.1;
-                                self.zoom_factor = self.zoom_factor.clamp(MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR);
+                                self.zoom_factor =
+                                    self.zoom_factor.clamp(MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR);
                                 self.zoom_factor = (self.zoom_factor * 10.).round() / 10.;
+                                self.egui_ctx.set_zoom_factor(self.zoom_factor);
                             }
                             if ctx.input_mut(|i| i.consume_shortcut(&kb_shortcuts::ZOOM_OUT)) {
                                 self.zoom_factor -= 0.1;
-                                self.zoom_factor = self.zoom_factor.clamp(MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR);
+                                self.zoom_factor =
+                                    self.zoom_factor.clamp(MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR);
                                 self.zoom_factor = (self.zoom_factor * 10.).round() / 10.;
+                                self.egui_ctx.set_zoom_factor(self.zoom_factor);
                             }
                         }
-                                    
+
                         self.overlay.update(ctx);
                     });
-                
 
                 self.backup.save(&inner.device_context);
 
@@ -261,7 +263,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                     &render_target,
                     &self.egui_ctx,
                     renderer_output,
-                    1.0
+                    1.0,
                 );
 
                 self.backup.restore(&inner.device_context);
@@ -283,22 +285,22 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
             match cmd {
                 egui::OutputCommand::CopyText(text) => {
                     clipboard.set_text(text).unwrap();
-                },
+                }
                 egui::OutputCommand::CopyImage(color_image) => {
-                    clipboard.set_image(ImageData {
-                    width: color_image.width(),
-                    height: color_image.height(),
-                    bytes: color_image
-                        .pixels
-                        .iter()
-                        .map(|pixel| pixel.to_array())
-                        .flatten()
-                        .collect(),
-                    }).unwrap();
-                },
-                egui::OutputCommand::OpenUrl(open_url) =>{
-                    ctx.open_url(open_url)
-                },
+                    clipboard
+                        .set_image(ImageData {
+                            width: color_image.width(),
+                            height: color_image.height(),
+                            bytes: color_image
+                                .pixels
+                                .iter()
+                                .map(|pixel| pixel.to_array())
+                                .flatten()
+                                .collect(),
+                        })
+                        .unwrap();
+                }
+                egui::OutputCommand::OpenUrl(open_url) => ctx.open_url(open_url),
             };
         }
     }
@@ -318,12 +320,14 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
     unsafe fn get_device_and_context(
         swap_chain: &IDXGISwapChain,
     ) -> windows::core::Result<(ID3D11Device, ID3D11DeviceContext)> {
-        match swap_chain.GetDevice::<ID3D11Device>() {
-            Ok(device) => match device.GetImmediateContext() {
-                Ok(device_ctx) => Ok((device, device_ctx)),
+        unsafe {
+            match swap_chain.GetDevice::<ID3D11Device>() {
+                Ok(device) => match device.GetImmediateContext() {
+                    Ok(device_ctx) => Ok((device, device_ctx)),
+                    Err(e) => Err(e),
+                },
                 Err(e) => Err(e),
-            },
-            Err(e) => Err(e),
+            }
         }
     }
 
@@ -333,8 +337,8 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
         sync_interval: u32,
         flags: DXGI_PRESENT,
     ) -> HRESULT {
-        if let Some(overlay_handler) = unsafe { &mut OVERLAY_HANDLER } {
-            // let swap_chain = unsafe { Self::get_swapchain_from_vtbl(&*swap_chain_vtbl) };
+        let overlay_handler = &raw mut OVERLAY_HANDLER;
+        if let Some(overlay_handler) = unsafe { &mut *overlay_handler } {
             overlay_handler.lazy_initialize(unsafe { mem::transmute(&swap_chain_vtbl) });
             overlay_handler.present()
         } else {
@@ -353,7 +357,8 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
         new_format: DXGI_FORMAT,
         swap_chain_flags: u32,
     ) -> HRESULT {
-        if let Some(overlay_handler) = unsafe { &mut OVERLAY_HANDLER } {
+        let overlay_handler = &raw mut OVERLAY_HANDLER;
+        if let Some(overlay_handler) = unsafe { &mut *overlay_handler } {
             if let Some(inner) = &mut overlay_handler.inner.as_mut() {
                 inner.render_target = None;
                 let result = Resize_Buffers_Detour.call(
@@ -376,8 +381,9 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                 let swap_chain: &IDXGISwapChain = unsafe { mem::transmute(&swap_chain_vtbl) };
                 let device = unsafe { inner.device_context.GetDevice().unwrap() };
 
-                let render_target =
-                    unsafe { Self::create_render_target_for_swap_chain(&device, swap_chain).unwrap() };
+                let render_target = unsafe {
+                    Self::create_render_target_for_swap_chain(&device, swap_chain).unwrap()
+                };
 
                 inner.render_target = Some(render_target);
                 return result;
@@ -388,62 +394,64 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
 
     // Hooked function
     fn window_process_hook(hwnd: HWND, umsg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-        if let Some(overlay_handler) = unsafe { &mut OVERLAY_HANDLER } {
-            if let Some(ref mut inner) = &mut overlay_handler.inner {
+        let overlay_handler = &raw mut OVERLAY_HANDLER;
+        if let Some(overlay_handler) = unsafe { &mut *overlay_handler } {
+            if let Some(inner) = &mut overlay_handler.inner {
                 let input = inner.input_handler.process(umsg, wparam.0, lparam.0);
 
-                if let Some(options) = overlay_handler.overlay
-                    .window_process(&input, &inner.input_handler.events) {
-                        // If user doesn't want to steal the input
-                        if options.should_input_pass_through {
+                if let Some(options) = overlay_handler
+                    .overlay
+                    .window_process(&input, &inner.input_handler.events)
+                {
+                    // If user doesn't want to steal the input
+                    if options.should_input_pass_through {
+                        return unsafe {
+                            (inner.window_process_callback)(hwnd, umsg, wparam, lparam)
+                        };
+                    }
+
+                    // Let overlay capture input only if in focus
+                    match input {
+                        InputResult::MouseMove
+                        | InputResult::MouseLeft
+                        | InputResult::MouseRight
+                        | InputResult::MouseMiddle
+                        | InputResult::Zoom
+                        | InputResult::Scroll => {
+                            if options.should_capture_all_input
+                                || overlay_handler.egui_ctx.wants_pointer_input() || overlay_handler.egui_ctx.is_pointer_over_area()
+                            {
+                                return LRESULT(1);
+                            }
+                        }
+                        InputResult::Character | InputResult::Key => {
+                            if options.should_capture_all_input
+                                || overlay_handler.egui_ctx.wants_keyboard_input()
+                            {
+                                return LRESULT(1);
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    if let Some(wnd_msg) = options.window_message {
+                        let res = unsafe {
+                            (inner.window_process_callback)(
+                                hwnd,
+                                wnd_msg.msg,
+                                wnd_msg.wparam,
+                                wnd_msg.lparam,
+                            )
+                        };
+
+                        if options.should_process_original_message {
                             return unsafe {
                                 (inner.window_process_callback)(hwnd, umsg, wparam, lparam)
                             };
+                        } else {
+                            return res;
                         }
-
-                        // Let overlay capture input only if in focus
-                        match input {
-                            InputResult::MouseMove |
-                            InputResult::MouseLeft |
-                            InputResult::MouseRight |
-                            InputResult::MouseMiddle |
-                            InputResult::Zoom |
-                            InputResult::Scroll => {
-                                if options.should_capture_all_input
-                                    || overlay_handler.egui_ctx.wants_pointer_input()
-                                {
-                                    return LRESULT(1);
-                                }
-                            }
-                            InputResult::Character | InputResult::Key => {
-                                if options.should_capture_all_input
-                                    || overlay_handler.egui_ctx.wants_keyboard_input()
-                                {
-                                    return LRESULT(1);
-                                }
-                            }
-                            _ => {}
-                        }
-
-                        if let Some(wnd_msg) = options.window_message {
-                            let res = unsafe {
-                                (inner.window_process_callback)(
-                                    hwnd,
-                                    wnd_msg.msg,
-                                    wnd_msg.wparam,
-                                    wnd_msg.lparam,
-                                )
-                            };
-
-                            if options.should_process_original_message {
-                                return unsafe {
-                                    (inner.window_process_callback)(hwnd, umsg, wparam, lparam)
-                                };
-                            }
-                            else {
-                                return res;
-                            }
-                        }
+                    }
                 }
                 return unsafe { (inner.window_process_callback)(hwnd, umsg, wparam, lparam) };
             }
@@ -464,17 +472,25 @@ pub fn set_overlay(
         u32,
     ) -> HRESULT,
 ) -> Result<(), OverlayError> {
-    match unsafe { &OVERLAY_HANDLER } {
+    let overlay_handler = &raw mut OVERLAY_HANDLER;
+    match unsafe { &*overlay_handler } {
         Some(_) => Err(OverlayError::AlreadyInitialized),
         None => unsafe {
             let egui_ctx = Context::default();
+            // Initialize system theme
+            egui_ctx.options_mut(|opts| {
+                if let Some(theme) = InputHandler::get_system_theme() {
+                    opts.fallback_theme = theme
+                }
+            });
+
             let overlay = overlay_creator.call_once((egui_ctx.clone(),));
             let overlay_handler = OverlayHandler {
                 inner: None,
                 egui_ctx,
                 backup: BackupState::default(),
                 overlay: Box::new(overlay),
-                zoom_factor: 1.0
+                zoom_factor: 1.0,
             };
             OVERLAY_HANDLER = Some(overlay_handler);
             Present_Detour
