@@ -285,6 +285,7 @@ impl InputHandler {
             events: self.events.drain(..).collect::<Vec<Event>>(),
             screen_rect: Some(self.get_window_rect()),
             time: Some(Self::get_system_time()),
+            system_theme: get_system_theme(),
             focused: true,
             ..Default::default()
         }
@@ -303,6 +304,21 @@ impl InputHandler {
         // past since 1st Jan, 1601.
         (time as f64) / 10_000_000.
     }
+
+    fn get_system_theme() -> Option<Theme> {
+        let key = windows_registry::CURRENT_USER
+            .open(
+                "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+            )
+            .ok()?;
+
+        Some(if key.get_u32("AppsUseLightTheme").ok()? == 1 {
+            Theme::Light
+        } else {
+            Theme::Dark
+        })
+    }
+
 
     #[inline]
     pub fn get_window_size(&self) -> Vec2 {
