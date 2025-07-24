@@ -4,8 +4,8 @@ version = "0.1.1"
 edition = "2024"
 
 [dependencies]
-egui = "0.31.1"
-egui-directx11 = { git = "https://github.com/hessiser/egui-directx11.git", rev = "deedc44" }
+egui = "0.32.0"
+egui-directx11 = "0.9.1"
 
 retour = { version = "0.3", features = ["static-detour"] }
 thiserror = "2.0.12"

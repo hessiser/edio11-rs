@@ -258,7 +258,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                     egui_directx11::split_output(egui_output);
                 Self::handle_platform_output(&self.egui_ctx, platform_output);
 
-                let _ = inner.egui_renderer.render(
+                let _ = inner.egui_renderer.render_gamma(
                     &inner.device_context,
                     &render_target,
                     &self.egui_ctx,
