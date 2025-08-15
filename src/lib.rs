@@ -7,26 +7,25 @@ use std::{mem, sync::Once};
 
 use arboard::{Clipboard, ImageData};
 use backup::BackupState;
-use egui::{Context, PlatformOutput, RawInput, Vec2, gui_zoom::kb_shortcuts};
+use egui::{gui_zoom::kb_shortcuts, Context, Memory, PlatformOutput, RawInput, Vec2};
 use errors::OverlayError;
 use input::{InputHandler, InputResult};
 use retour::static_detour;
 use windows::{
-    Win32::{
+    core::HRESULT, Win32::{
         Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::{
             Direct3D11::{
                 ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11Texture2D,
             },
-            Dxgi::{Common::DXGI_FORMAT, DXGI_PRESENT, IDXGISwapChain, IDXGISwapChain_Vtbl},
-            Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow},
+            Dxgi::{Common::DXGI_FORMAT, IDXGISwapChain, IDXGISwapChain_Vtbl, DXGI_PRESENT},
+            Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST},
         },
         UI::{
             Shell::GetScaleFactorForMonitor,
-            WindowsAndMessaging::{GWLP_WNDPROC, GetClientRect, SetWindowLongPtrW},
+            WindowsAndMessaging::{GetClientRect, SetWindowLongPtrW, GWLP_WNDPROC, WM_CLOSE},
         },
-    },
-    core::HRESULT,
+    }
 };
 
 static mut OVERLAY_HANDLER: Option<OverlayHandler<Box<dyn Overlay>>> = None;
@@ -95,8 +94,7 @@ pub trait Overlay {
         height: u32,
         new_format: DXGI_FORMAT,
         swap_chain_flags: u32,
-    ) {
-    }
+    ) {}
     fn window_process(
         &mut self,
         input: &InputResult,
@@ -104,6 +102,7 @@ pub trait Overlay {
     ) -> Option<WindowProcessOptions> {
         None
     }
+    fn save(&mut self, _storage: &mut Memory) {}
 }
 
 impl<T: Overlay + ?Sized> Overlay for Box<T> {
@@ -130,6 +129,11 @@ impl<T: Overlay + ?Sized> Overlay for Box<T> {
             new_format,
             swap_chain_flags,
         );
+    }
+
+    #[inline]
+    fn save(&mut self, _storage: &mut Memory) {
+        (**self).save(_storage);
     }
 
     #[inline]
@@ -395,9 +399,17 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
     // Hooked function
     fn window_process_hook(hwnd: HWND, umsg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         let overlay_handler = &raw mut OVERLAY_HANDLER;
+        
         if let Some(overlay_handler) = unsafe { &mut *overlay_handler } {
             if let Some(inner) = &mut overlay_handler.inner {
                 let input = inner.input_handler.process(umsg, wparam.0, lparam.0);
+                
+                if umsg == WM_CLOSE {
+                    overlay_handler.egui_ctx.memory_mut(|writer| {
+                        overlay_handler.overlay.save(writer)
+                    });
+                    return unsafe { (inner.window_process_callback)(hwnd, umsg, wparam, lparam) };
+                }
 
                 if let Some(options) = overlay_handler
                     .overlay
