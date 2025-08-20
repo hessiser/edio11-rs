@@ -1,24 +1,40 @@
 #![allow(dead_code)]
 use arboard::Clipboard;
 use egui::{
-    Context, Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, RawInput, Rect, Theme, Vec2
+    Context, Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, RawInput, Rect, Theme,
+    TouchId, Vec2,
 };
 use windows::{
     Wdk::System::SystemInformation::NtQuerySystemTime,
     Win32::{
-        Foundation::{HWND, RECT}, Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST}, System::SystemServices::{MK_CONTROL, MK_SHIFT}, UI::{
-            Input::KeyboardAndMouse::{
-                GetAsyncKeyState, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END,
-                VK_ESCAPE, VK_HOME, VK_INSERT, VK_LEFT, VK_LSHIFT, VK_NEXT, VK_PRIOR, VK_RETURN,
-                VK_RIGHT, VK_SPACE, VK_TAB, VK_UP,
-            }, Shell::GetScaleFactorForMonitor, WindowsAndMessaging::{
-                GetClientRect, KF_REPEAT, WHEEL_DELTA, WM_CHAR, WM_KEYDOWN, WM_KEYUP,
-                WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN,
-                WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDBLCLK,
+        Foundation::{HWND, RECT},
+        Graphics::Gdi::{
+            GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+            ScreenToClient,
+        },
+        System::SystemServices::{MK_CONTROL, MK_SHIFT},
+        UI::{
+            Input::{
+                KeyboardAndMouse::{
+                    GetAsyncKeyState, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END,
+                    VK_ESCAPE, VK_HOME, VK_INSERT, VK_LEFT, VK_LSHIFT, VK_NEXT, VK_PRIOR,
+                    VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB, VK_UP,
+                },
+                Pointer::{
+                    GetPointerInfo, POINTER_BUTTON_CHANGE_TYPE, POINTER_FLAG_FIRSTBUTTON,
+                    POINTER_FLAG_SECONDBUTTON, POINTER_INFO,
+                },
+            },
+            Shell::GetScaleFactorForMonitor,
+            WindowsAndMessaging::{
+                GetClientRect, GetMessageExtraInfo, KF_REPEAT, PT_MOUSE, PT_TOUCH, WHEEL_DELTA,
+                WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
+                WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+                WM_MOUSEWHEEL, WM_POINTERDOWN, WM_POINTERUP, WM_POINTERUPDATE, WM_RBUTTONDBLCLK,
                 WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDBLCLK,
                 WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1, XBUTTON2,
-            }
-        }
+            },
+        },
     },
 };
 
@@ -67,120 +83,178 @@ impl InputHandler {
 
     pub fn process(&mut self, umsg: u32, wparam: usize, lparam: isize) -> InputResult {
         match umsg {
-            WM_MOUSEMOVE => {
-                self.alter_modifiers(get_mouse_modifiers(wparam));
+            WM_POINTERUPDATE => {
+                let mut pointer_info = POINTER_INFO::default();
+                let pointer_id = wparam as u32 & 0xFFFF;
+                unsafe {
+                    GetPointerInfo(pointer_id, &mut pointer_info).unwrap();
+                    let mut pt = pointer_info.ptPixelLocation;
+                    ScreenToClient(self.hwnd, &mut pt).unwrap();
 
-                self.events.push(Event::PointerMoved(self.get_pos(lparam)));
-                InputResult::MouseMove
+                    let pos = Pos2::new(pt.x as f32, pt.y as f32) / self.ctx.pixels_per_point();
+                    self.events.push(Event::PointerMoved(pos));
+
+                    if pointer_info.pointerType == PT_TOUCH {
+                        self.events.push(Event::Touch {
+                            device_id: egui::TouchDeviceId(0),
+                            id: TouchId::from(pointer_id),
+                            phase: egui::TouchPhase::Move,
+                            pos,
+                            force: None,
+                        });
+                    }
+                    InputResult::MouseMove
+                }
             }
-            WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
-                let modifiers = get_mouse_modifiers(wparam);
-                self.alter_modifiers(modifiers);
+            WM_POINTERDOWN | WM_POINTERUP => {
+                let mut pointer_info = POINTER_INFO::default();
+                let pointer_id = wparam as u32 & 0xFFFF;
+                unsafe {
+                    GetPointerInfo(pointer_id, &mut pointer_info).unwrap();
+                    let mut pt = pointer_info.ptPixelLocation;
 
-                self.events.push(Event::PointerButton {
-                    pos: self.get_pos(lparam),
-                    button: PointerButton::Primary,
-                    pressed: true,
-                    modifiers,
-                });
-                InputResult::MouseLeft
-            }
-            WM_LBUTTONUP => {
-                let modifiers = get_mouse_modifiers(wparam);
-                self.alter_modifiers(modifiers);
-
-                self.events.push(Event::PointerButton {
-                    pos: self.get_pos(lparam),
-                    button: PointerButton::Primary,
-                    pressed: false,
-                    modifiers,
-                });
-                InputResult::MouseLeft
-            }
-            WM_RBUTTONDOWN | WM_RBUTTONDBLCLK => {
-                let modifiers = get_mouse_modifiers(wparam);
-                self.alter_modifiers(modifiers);
-
-                self.events.push(Event::PointerButton {
-                    pos: self.get_pos(lparam),
-                    button: PointerButton::Secondary,
-                    pressed: true,
-                    modifiers,
-                });
-                InputResult::MouseRight
-            }
-            WM_RBUTTONUP => {
-                let modifiers = get_mouse_modifiers(wparam);
-                self.alter_modifiers(modifiers);
-
-                self.events.push(Event::PointerButton {
-                    pos: self.get_pos(lparam),
-                    button: PointerButton::Secondary,
-                    pressed: false,
-                    modifiers,
-                });
-                InputResult::MouseRight
-            }
-            WM_MBUTTONDOWN | WM_MBUTTONDBLCLK => {
-                let modifiers = get_mouse_modifiers(wparam);
-                self.alter_modifiers(modifiers);
-
-                self.events.push(Event::PointerButton {
-                    pos: self.get_pos(lparam),
-                    button: PointerButton::Middle,
-                    pressed: true,
-                    modifiers,
-                });
-                InputResult::MouseMiddle
-            }
-            WM_MBUTTONUP => {
-                let modifiers = get_mouse_modifiers(wparam);
-                self.alter_modifiers(modifiers);
-
-                self.events.push(Event::PointerButton {
-                    pos: self.get_pos(lparam),
-                    button: PointerButton::Middle,
-                    pressed: false,
-                    modifiers,
-                });
-                InputResult::MouseMiddle
-            }
-            WM_XBUTTONDOWN | WM_XBUTTONDBLCLK => {
-                let modifiers = get_mouse_modifiers(wparam);
-                self.alter_modifiers(modifiers);
-
-                self.events.push(Event::PointerButton {
-                    pos: self.get_pos(lparam),
-                    button: if (wparam as u32) >> 16 & (XBUTTON1 as u32) != 0 {
-                        PointerButton::Extra1
-                    } else if (wparam as u32) >> 16 & (XBUTTON2 as u32) != 0 {
-                        PointerButton::Extra2
+                    ScreenToClient(self.hwnd, &mut pt).unwrap();
+                    let button = if pointer_info.pointerFlags.contains(POINTER_FLAG_FIRSTBUTTON) {
+                        PointerButton::Primary
+                    } else if pointer_info
+                        .pointerFlags
+                        .contains(POINTER_FLAG_SECONDBUTTON)
+                    {
+                        PointerButton::Secondary
                     } else {
-                        unreachable!()
-                    },
-                    pressed: true,
-                    modifiers,
-                });
-                InputResult::MouseMiddle
-            }
-            WM_XBUTTONUP => {
-                let modifiers = get_mouse_modifiers(wparam);
-                self.alter_modifiers(modifiers);
+                        PointerButton::Primary
+                    };
 
-                self.events.push(Event::PointerButton {
-                    pos: self.get_pos(lparam),
-                    button: if (wparam as u32) >> 16 & (XBUTTON1 as u32) != 0 {
-                        PointerButton::Extra1
-                    } else if (wparam as u32) >> 16 & (XBUTTON2 as u32) != 0 {
-                        PointerButton::Extra2
+                    let modifiers = if pointer_info.pointerType == PT_MOUSE {
+                        let modifiers = get_mouse_modifiers(pointer_info.dwKeyStates as _);
+                        self.alter_modifiers(modifiers);
+                        modifiers
                     } else {
-                        unreachable!()
-                    },
-                    pressed: false,
-                    modifiers,
-                });
-                InputResult::MouseMiddle
+                        Modifiers::default()
+                    };
+
+                    let pressed = if umsg == WM_POINTERDOWN { true } else { false };
+                    let pos = Pos2::new(pt.x as f32, pt.y as f32) / self.ctx.pixels_per_point();
+
+                    self.events.push(Event::PointerButton {
+                        pos,
+                        button,
+                        pressed,
+                        modifiers,
+                    });
+
+                    if pointer_info.pointerType == PT_TOUCH {
+                        if !pressed {
+                            self.events.push(Event::PointerGone);
+                        }
+
+                        let phase = if pressed {
+                            egui::TouchPhase::Start
+                        } else {
+                            egui::TouchPhase::End
+                        };
+
+                        self.events.push(Event::Touch {
+                            device_id: egui::TouchDeviceId(0),
+                            id: TouchId::from(pointer_id),
+                            phase: phase,
+                            pos,
+                            force: None,
+                        });
+                    }
+                    match button {
+                        PointerButton::Primary => InputResult::MouseLeft,
+                        PointerButton::Middle | PointerButton::Extra1 | PointerButton::Extra2 => InputResult::MouseMiddle,
+                        PointerButton::Secondary => InputResult::MouseRight,
+                        _ => InputResult::Unknown,
+                    }
+                }
             }
+            // https://stackoverflow.com/questions/29857587/detect-if-wm-mousemove-is-caused-by-touch-pen
+            // WM_MOUSEMOVE => {
+            //     // Check for synthetic mouse from touch
+            //     let extra_info = unsafe { GetMessageExtraInfo().0 as usize };
+            //     const SIGNATURE_MASK: usize = 0xFFFFFF00;
+            //     const MOUSEEVENTF_FROMTOUCH: usize = 0xFF515700;
+
+            //     let is_synthetic_touch = (extra_info & SIGNATURE_MASK) == MOUSEEVENTF_FROMTOUCH;
+            //     if is_synthetic_touch {
+            //         // Ignore mouse events generated by touch
+            //         return InputResult::Unknown;
+            //     }
+
+            //     log::info!("Mouse");
+
+            //     self.alter_modifiers(get_mouse_modifiers(wparam));
+
+            //     self.events.push(Event::PointerMoved(self.get_pos(lparam)));
+            //     InputResult::MouseMove
+            // }
+            // WM_LBUTTONDOWN | WM_LBUTTONDBLCLK | WM_LBUTTONUP | WM_RBUTTONDOWN
+            // | WM_RBUTTONDBLCLK | WM_RBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONDBLCLK
+            // | WM_MBUTTONUP | WM_XBUTTONDOWN | WM_XBUTTONUP => {
+            //     // Check for synthetic mouse from touch
+            //     let extra_info = unsafe { GetMessageExtraInfo().0 as usize };
+            //     const SIGNATURE_MASK: usize = 0xFFFFFF00;
+            //     const MOUSEEVENTF_FROMTOUCH: usize = 0xFF515700;
+
+            //     let is_synthetic_touch = (extra_info & SIGNATURE_MASK) == MOUSEEVENTF_FROMTOUCH;
+            //     if is_synthetic_touch {
+            //         // Ignore mouse events generated by touch
+            //         return InputResult::Unknown;
+            //     }
+
+            //     log::info!("Mouse");
+
+            //     let modifiers = get_mouse_modifiers(wparam);
+            //     self.alter_modifiers(modifiers);
+            //     let pos = self.get_pos(lparam);
+
+            //     let (button, pressed, input_result) = match umsg {
+            //         WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
+            //             (PointerButton::Primary, true, InputResult::MouseLeft)
+            //         }
+            //         WM_LBUTTONUP => (PointerButton::Primary, false, InputResult::MouseLeft),
+            //         WM_RBUTTONDOWN | WM_RBUTTONDBLCLK => {
+            //             (PointerButton::Secondary, true, InputResult::MouseRight)
+            //         }
+            //         WM_RBUTTONUP => (PointerButton::Secondary, false, InputResult::MouseRight),
+            //         WM_MBUTTONDOWN | WM_MBUTTONDBLCLK => {
+            //             (PointerButton::Middle, true, InputResult::MouseMiddle)
+            //         }
+            //         WM_MBUTTONUP => (PointerButton::Middle, false, InputResult::MouseMiddle),
+            //         WM_XBUTTONDOWN => {
+            //             let btn = if (wparam as u32) >> 16 & (XBUTTON1 as u32) != 0 {
+            //                 PointerButton::Extra1
+            //             } else if (wparam as u32) >> 16 & (XBUTTON2 as u32) != 0 {
+            //                 PointerButton::Extra2
+            //             } else {
+            //                 unreachable!()
+            //             };
+            //             (btn, true, InputResult::MouseMiddle)
+            //         }
+            //         WM_XBUTTONUP => {
+            //             let btn = if (wparam as u32) >> 16 & (XBUTTON1 as u32) != 0 {
+            //                 PointerButton::Extra1
+            //             } else if (wparam as u32) >> 16 & (XBUTTON2 as u32) != 0 {
+            //                 PointerButton::Extra2
+            //             } else {
+            //                 unreachable!()
+            //             };
+            //             (btn, false, InputResult::MouseMiddle)
+            //         }
+            //         _ => unreachable!(),
+            //     };
+
+            //     self.events.push(Event::PointerButton {
+            //         pos,
+            //         button,
+            //         pressed,
+            //         modifiers,
+            //     });
+
+            //     return input_result;
+            // }
             WM_CHAR => {
                 if let Some(ch) = char::from_u32(wparam as _) {
                     if !ch.is_control() {
@@ -306,7 +380,6 @@ impl InputHandler {
     }
 
     pub fn get_system_theme() -> Option<Theme> {
-
         match dark_light::detect() {
             Ok(mode) => match mode {
                 dark_light::Mode::Dark => Some(Theme::Dark),
@@ -316,7 +389,6 @@ impl InputHandler {
             Err(_) => None,
         }
     }
-
 
     #[inline]
     pub fn get_window_size(&self) -> Vec2 {
@@ -329,7 +401,7 @@ impl InputHandler {
         Vec2::new(
             (rect.right - rect.left) as f32,
             (rect.bottom - rect.top) as f32,
-        )/self.ctx.pixels_per_point()
+        ) / self.ctx.pixels_per_point()
     }
 
     #[inline]
@@ -343,12 +415,11 @@ impl InputHandler {
     fn get_pos(&self, lparam: isize) -> Pos2 {
         let x = (lparam & 0xFFFF) as i16 as f32;
         let y = (lparam >> 16 & 0xFFFF) as i16 as f32;
-    
-        // Divide by scale
-        Pos2::new(x, y)/self.ctx.pixels_per_point()
-    }    
-}
 
+        // Divide by scale
+        Pos2::new(x, y) / self.ctx.pixels_per_point()
+    }
+}
 
 fn get_mouse_modifiers(wparam: usize) -> Modifiers {
     Modifiers {

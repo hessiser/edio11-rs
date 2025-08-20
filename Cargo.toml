@@ -5,7 +5,8 @@ edition = "2024"
 
 [dependencies]
 egui = "0.32.0"
-egui-directx11 = "0.9.1"
+# egui-directx11 = "0.9.1"
+egui-directx11 = { git = "https://github.com/hessiser/egui-directx11.git", rev = "9ed7ea9" }
 
 retour = { version = "0.3", features = ["static-detour"] }
 thiserror = "2.0.12"
@@ -23,8 +24,10 @@ features = [
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Direct3D11",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Input_Pointer",
+    "Win32_UI_WindowsAndMessaging",
     "Win32_System_SystemServices",
     "Wdk_System_SystemInformation",
     "Win32_Graphics_Direct3D_Fxc",
-    "Win32_UI_HiDpi"
+    "Win32_UI_HiDpi",
 ]

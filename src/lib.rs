@@ -22,8 +22,7 @@ use windows::{
             Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST},
         },
         UI::{
-            Shell::GetScaleFactorForMonitor,
-            WindowsAndMessaging::{GetClientRect, SetWindowLongPtrW, GWLP_WNDPROC, WM_CLOSE},
+            Input::Pointer::EnableMouseInPointer, Shell::GetScaleFactorForMonitor, WindowsAndMessaging::{GetClientRect, SetWindowLongPtrW, GWLP_WNDPROC, WM_CLOSE}
         },
     }
 };
@@ -497,6 +496,8 @@ pub fn set_overlay(
             });
 
             let overlay = overlay_creator.call_once((egui_ctx.clone(),));
+            EnableMouseInPointer(true).unwrap();
+
             let overlay_handler = OverlayHandler {
                 inner: None,
                 egui_ctx,
