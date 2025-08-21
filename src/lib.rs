@@ -7,24 +7,28 @@ use std::{mem, sync::Once};
 
 use arboard::{Clipboard, ImageData};
 use backup::BackupState;
-use egui::{gui_zoom::kb_shortcuts, Context, Memory, PlatformOutput, RawInput, Vec2};
+use egui::{Context, Memory, PlatformOutput, RawInput, Vec2, gui_zoom::kb_shortcuts};
 use errors::OverlayError;
 use input::{InputHandler, InputResult};
 use retour::static_detour;
 use windows::{
-    core::HRESULT, Win32::{
+    Win32::{
         Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::{
             Direct3D11::{
-                ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView, ID3D11Texture2D,
+                D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView,
+                ID3D11Texture2D,
             },
-            Dxgi::{Common::DXGI_FORMAT, IDXGISwapChain, IDXGISwapChain_Vtbl, DXGI_PRESENT},
-            Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST},
+            Dxgi::{Common::DXGI_FORMAT, DXGI_PRESENT, IDXGISwapChain, IDXGISwapChain_Vtbl},
+            Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow},
         },
         UI::{
-            Input::Pointer::EnableMouseInPointer, Shell::GetScaleFactorForMonitor, WindowsAndMessaging::{GetClientRect, SetWindowLongPtrW, GWLP_WNDPROC, WM_CLOSE}
+            Input::Pointer::EnableMouseInPointer,
+            Shell::GetScaleFactorForMonitor,
+            WindowsAndMessaging::{GWLP_WNDPROC, GetClientRect, SetWindowLongPtrW, WM_CLOSE},
         },
-    }
+    },
+    core::HRESULT,
 };
 
 static mut OVERLAY_HANDLER: Option<OverlayHandler<Box<dyn Overlay>>> = None;
@@ -93,7 +97,8 @@ pub trait Overlay {
         height: u32,
         new_format: DXGI_FORMAT,
         swap_chain_flags: u32,
-    ) {}
+    ) {
+    }
     fn window_process(
         &mut self,
         input: &InputResult,
@@ -222,7 +227,8 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                 };
 
                 if pixels_per_point > 0.0 {
-                    self.egui_ctx.set_pixels_per_point(pixels_per_point * self.zoom_factor);
+                    self.egui_ctx
+                        .set_pixels_per_point(pixels_per_point * self.zoom_factor);
                 }
 
                 let egui_output = self
@@ -261,7 +267,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                     egui_directx11::split_output(egui_output);
                 Self::handle_platform_output(&self.egui_ctx, platform_output);
 
-                let _ = inner.egui_renderer.render_gamma(
+                let _ = inner.egui_renderer.render(
                     &inner.device_context,
                     &render_target,
                     &self.egui_ctx,
@@ -312,7 +318,10 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
         device: &ID3D11Device,
         swap_chain: &IDXGISwapChain,
     ) -> windows::core::Result<ID3D11RenderTargetView> {
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
         let swap_chain_texture = unsafe { swap_chain.GetBuffer::<ID3D11Texture2D>(0) }?;
+        unsafe { swap_chain_texture.GetDesc(&mut desc) };
+        log::error!("FORMAT: {}", desc.Format.0);
         let mut render_target = None;
         unsafe {
             device.CreateRenderTargetView(&swap_chain_texture, None, Some(&mut render_target))
@@ -398,15 +407,15 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
     // Hooked function
     fn window_process_hook(hwnd: HWND, umsg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         let overlay_handler = &raw mut OVERLAY_HANDLER;
-        
+
         if let Some(overlay_handler) = unsafe { &mut *overlay_handler } {
             if let Some(inner) = &mut overlay_handler.inner {
                 let input = inner.input_handler.process(umsg, wparam.0, lparam.0);
-                
+
                 if umsg == WM_CLOSE {
-                    overlay_handler.egui_ctx.memory_mut(|writer| {
-                        overlay_handler.overlay.save(writer)
-                    });
+                    overlay_handler
+                        .egui_ctx
+                        .memory_mut(|writer| overlay_handler.overlay.save(writer));
                     return unsafe { (inner.window_process_callback)(hwnd, umsg, wparam, lparam) };
                 }
 
@@ -430,7 +439,8 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                         | InputResult::Zoom
                         | InputResult::Scroll => {
                             if options.should_capture_all_input
-                                || overlay_handler.egui_ctx.wants_pointer_input() || overlay_handler.egui_ctx.is_pointer_over_area()
+                                || overlay_handler.egui_ctx.wants_pointer_input()
+                                || overlay_handler.egui_ctx.is_pointer_over_area()
                             {
                                 return LRESULT(1);
                             }
