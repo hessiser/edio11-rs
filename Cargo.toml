@@ -12,6 +12,7 @@ thiserror = "2.0.12"
 arboard = "3.5.0"
 log = "0.4.27"
 dark-light = "2.0.0"
+webbrowser = "1.0.5"
 
 [dependencies.windows]
 version = "0.61.1"

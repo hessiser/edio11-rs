@@ -309,7 +309,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                         })
                         .unwrap();
                 }
-                egui::OutputCommand::OpenUrl(open_url) => ctx.open_url(open_url),
+                egui::OutputCommand::OpenUrl(open_url) => webbrowser::open(&open_url.url).unwrap(),
             };
         }
     }
