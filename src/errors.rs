@@ -8,4 +8,6 @@ pub enum OverlayError {
     General(&'static str),
     #[error("Windows error {0}")]
     Win(#[from] windows::core::Error),
+    #[error("Initialization failed")]
+    InitializationFailed,
 }

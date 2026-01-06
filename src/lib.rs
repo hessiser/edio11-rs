@@ -30,6 +30,7 @@ use windows::{
     },
     core::HRESULT,
 };
+use windows::core::HSTRING;
 
 static mut OVERLAY_HANDLER: Option<OverlayHandler<Box<dyn Overlay>>> = None;
 
@@ -159,19 +160,41 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
     fn lazy_initialize(&mut self, swap_chain: &IDXGISwapChain) {
         static INIT: Once = Once::new();
         INIT.call_once(|| {
-            let swap_desc = unsafe { swap_chain.GetDesc().unwrap() };
+            let swap_desc = match unsafe { swap_chain.GetDesc() } {
+                Ok(sd) => sd,
+                Err(e) => {
+                    log::error!("GetDesc failed for swap chain: {:?}", e);
+                    return;
+                }
+            };
             let hwnd = swap_desc.OutputWindow;
             if hwnd.0.is_null() {
-                panic!("Invalid output window descriptor");
+                log::error!("Invalid output window descriptor");
+                return;
             }
 
-            let (device, device_context) =
-                unsafe { Self::get_device_and_context(swap_chain) }.unwrap();
-            let render_target =
-                unsafe { Self::create_render_target_for_swap_chain(&device, swap_chain).unwrap() };
+            let (device, device_context) = match unsafe { Self::get_device_and_context(swap_chain) } {
+                Ok(v) => v,
+                Err(e) => {
+                    log::error!("get_device_and_context failed: {:?}", e);
+                    return;
+                }
+            };
+            let render_target = match unsafe { Self::create_render_target_for_swap_chain(&device, swap_chain) } {
+                Ok(rt) => rt,
+                Err(e) => {
+                    log::error!("create_render_target_for_swap_chain failed: {:?}", e);
+                    return;
+                }
+            };
 
-            let egui_renderer =
-                egui_directx11::Renderer::new(&device).expect("Failed to create egui renderer");
+            let egui_renderer = match egui_directx11::Renderer::new(&device) {
+                Ok(r) => r,
+                Err(e) => {
+                    log::error!("Failed to create egui renderer: {:?}", e);
+                    return;
+                }
+            };
 
             let window_process_target = unsafe {
                 mem::transmute(SetWindowLongPtrW(
@@ -201,21 +224,32 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                     let monitor = MonitorFromWindow(inner.hwnd, MONITOR_DEFAULTTONEAREST);
 
                     // Scale
-                    let scale_factor = GetScaleFactorForMonitor(monitor).unwrap().0 / 100;
+                    let scale_factor = match GetScaleFactorForMonitor(monitor) {
+                        Ok(s) => s.0 / 100,
+                        Err(e) => {
+                            log::warn!("GetScaleFactorForMonitor failed: {:?}. Defaulting to 100.", e);
+                            100
+                        }
+                    };
 
                     // Screen Size
                     let mut monitor_info = MONITORINFO {
                         cbSize: size_of::<MONITORINFO>() as _,
                         ..Default::default()
                     };
-                    GetMonitorInfoW(monitor, &raw mut monitor_info).unwrap();
+                    if unsafe { GetMonitorInfoW(monitor, &mut monitor_info) }.as_bool() == false {
+                        let e = windows::core::Error::from_win32();
+                        log::warn!("GetMonitorInfoW failed: {:?}", e);
+                    }
                     let width = monitor_info.rcMonitor.right - monitor_info.rcMonitor.left;
                     let height = monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top;
                     let screen_size = Vec2::new(width as f32, height as f32);
 
                     // Window Size
                     let mut rect = RECT::default();
-                    GetClientRect(inner.hwnd, &mut rect).unwrap();
+                    if let Err(e) = unsafe { GetClientRect(inner.hwnd, &mut rect) } {
+                        log::warn!("GetClientRect failed: {:?}", e);
+                    }
 
                     let window_size = Vec2::new(
                         (rect.right - rect.left) as f32,
@@ -288,16 +322,28 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
 
     // Only supporting WindowsOS
     fn handle_platform_output(ctx: &egui::Context, platform_output: PlatformOutput) {
-        let mut clipboard = Clipboard::new().unwrap();
+                let mut clipboard = match Clipboard::new() {
+                    Ok(cb) => Some(cb),
+                    Err(e) => {
+                        log::warn!("Clipboard not available: {:?}", e);
+                        None
+                    }
+                };
 
         for cmd in platform_output.commands {
             match cmd {
                 egui::OutputCommand::CopyText(text) => {
-                    clipboard.set_text(text).unwrap();
+                    if let Some(cb) = clipboard.as_mut() {
+                        if let Err(e) = cb.set_text(text) {
+                            log::warn!("Failed to set clipboard text: {:?}", e);
+                        }
+                    } else {
+                        log::debug!("Skipping clipboard set_text because clipboard is unavailable");
+                    }
                 }
                 egui::OutputCommand::CopyImage(color_image) => {
-                    clipboard
-                        .set_image(ImageData {
+                    if let Some(cb) = clipboard.as_mut() {
+                        if let Err(e) = cb.set_image(ImageData {
                             width: color_image.width(),
                             height: color_image.height(),
                             bytes: color_image
@@ -306,10 +352,18 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                                 .map(|pixel| pixel.to_array())
                                 .flatten()
                                 .collect(),
-                        })
-                        .unwrap();
+                        }) {
+                            log::warn!("Failed to set clipboard image: {:?}", e);
+                        }
+                    } else {
+                        log::debug!("Skipping clipboard set_image because clipboard is unavailable");
+                    }
                 }
-                egui::OutputCommand::OpenUrl(open_url) => webbrowser::open(&open_url.url).unwrap(),
+                egui::OutputCommand::OpenUrl(open_url) => {
+                    if let Err(e) = webbrowser::open(&open_url.url) {
+                        log::warn!("Failed to open URL {}: {:?}", open_url.url, e);
+                    }
+                }
             };
         }
     }
@@ -321,12 +375,17 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         let swap_chain_texture = unsafe { swap_chain.GetBuffer::<ID3D11Texture2D>(0) }?;
         unsafe { swap_chain_texture.GetDesc(&mut desc) };
-        log::error!("FORMAT: {}", desc.Format.0);
         let mut render_target = None;
         unsafe {
             device.CreateRenderTargetView(&swap_chain_texture, None, Some(&mut render_target))
         }?;
-        Ok(render_target.unwrap())
+        match render_target {
+            Some(rt) => Ok(rt),
+            None => {
+                log::error!("CreateRenderTargetView succeeded but returned no render target");
+                Err(windows::core::Error::new(HRESULT(0), "Missing render target"))
+            }
+        }
     }
 
     unsafe fn get_device_and_context(
@@ -506,7 +565,9 @@ pub fn set_overlay(
             });
 
             let overlay = overlay_creator.call_once((egui_ctx.clone(),));
-            EnableMouseInPointer(true).unwrap();
+            if let Err(e) = EnableMouseInPointer(true) {
+                log::warn!("EnableMouseInPointer failed: {:?}", e);
+            }
 
             let overlay_handler = OverlayHandler {
                 inner: None,
@@ -516,20 +577,28 @@ pub fn set_overlay(
                 zoom_factor: 1.0,
             };
             OVERLAY_HANDLER = Some(overlay_handler);
-            Present_Detour
-                .initialize(
-                    mem::transmute(present_target),
-                    OverlayHandler::<dyn Overlay>::present_hook,
-                )
-                .unwrap();
-            Resize_Buffers_Detour
-                .initialize(
-                    mem::transmute(resize_buffers_target),
-                    OverlayHandler::<dyn Overlay>::resize_buffers_hook,
-                )
-                .unwrap();
-            Present_Detour.enable().unwrap();
-            Resize_Buffers_Detour.enable().unwrap();
+            if let Err(e) = Present_Detour.initialize(
+                mem::transmute(present_target),
+                OverlayHandler::<dyn Overlay>::present_hook,
+            ) {
+                log::error!("Failed to initialize Present_Detour: {:?}", e);
+                return Err(OverlayError::InitializationFailed);
+            }
+            if let Err(e) = Resize_Buffers_Detour.initialize(
+                mem::transmute(resize_buffers_target),
+                OverlayHandler::<dyn Overlay>::resize_buffers_hook,
+            ) {
+                log::error!("Failed to initialize Resize_Buffers_Detour: {:?}", e);
+                return Err(OverlayError::InitializationFailed);
+            }
+            if let Err(e) = Present_Detour.enable() {
+                log::error!("Failed to enable Present_Detour: {:?}", e);
+                return Err(OverlayError::InitializationFailed);
+            }
+            if let Err(e) = Resize_Buffers_Detour.enable() {
+                log::error!("Failed to enable Resize_Buffers_Detour: {:?}", e);
+                return Err(OverlayError::InitializationFailed);
+            }
             Ok(())
         },
     }
