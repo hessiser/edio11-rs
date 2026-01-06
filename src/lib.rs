@@ -11,6 +11,7 @@ use egui::{Context, Memory, PlatformOutput, RawInput, Vec2, gui_zoom::kb_shortcu
 use errors::OverlayError;
 use input::{InputHandler, InputResult};
 use retour::static_detour;
+use windows::core::HSTRING;
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
@@ -30,7 +31,6 @@ use windows::{
     },
     core::HRESULT,
 };
-use windows::core::HSTRING;
 
 static mut OVERLAY_HANDLER: Option<OverlayHandler<Box<dyn Overlay>>> = None;
 
@@ -173,20 +173,22 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                 return;
             }
 
-            let (device, device_context) = match unsafe { Self::get_device_and_context(swap_chain) } {
+            let (device, device_context) = match unsafe { Self::get_device_and_context(swap_chain) }
+            {
                 Ok(v) => v,
                 Err(e) => {
                     log::error!("get_device_and_context failed: {:?}", e);
                     return;
                 }
             };
-            let render_target = match unsafe { Self::create_render_target_for_swap_chain(&device, swap_chain) } {
-                Ok(rt) => rt,
-                Err(e) => {
-                    log::error!("create_render_target_for_swap_chain failed: {:?}", e);
-                    return;
-                }
-            };
+            let render_target =
+                match unsafe { Self::create_render_target_for_swap_chain(&device, swap_chain) } {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        log::error!("create_render_target_for_swap_chain failed: {:?}", e);
+                        return;
+                    }
+                };
 
             let egui_renderer = match egui_directx11::Renderer::new(&device) {
                 Ok(r) => r,
@@ -227,7 +229,10 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                     let scale_factor = match GetScaleFactorForMonitor(monitor) {
                         Ok(s) => s.0 / 100,
                         Err(e) => {
-                            log::warn!("GetScaleFactorForMonitor failed: {:?}. Defaulting to 100.", e);
+                            log::warn!(
+                                "GetScaleFactorForMonitor failed: {:?}. Defaulting to 100.",
+                                e
+                            );
                             100
                         }
                     };
@@ -322,13 +327,13 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
 
     // Only supporting WindowsOS
     fn handle_platform_output(ctx: &egui::Context, platform_output: PlatformOutput) {
-                let mut clipboard = match Clipboard::new() {
-                    Ok(cb) => Some(cb),
-                    Err(e) => {
-                        log::warn!("Clipboard not available: {:?}", e);
-                        None
-                    }
-                };
+        let mut clipboard = match Clipboard::new() {
+            Ok(cb) => Some(cb),
+            Err(e) => {
+                log::warn!("Clipboard not available: {:?}", e);
+                None
+            }
+        };
 
         for cmd in platform_output.commands {
             match cmd {
@@ -356,7 +361,9 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                             log::warn!("Failed to set clipboard image: {:?}", e);
                         }
                     } else {
-                        log::debug!("Skipping clipboard set_image because clipboard is unavailable");
+                        log::debug!(
+                            "Skipping clipboard set_image because clipboard is unavailable"
+                        );
                     }
                 }
                 egui::OutputCommand::OpenUrl(open_url) => {
@@ -383,7 +390,10 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
             Some(rt) => Ok(rt),
             None => {
                 log::error!("CreateRenderTargetView succeeded but returned no render target");
-                Err(windows::core::Error::new(HRESULT(0), "Missing render target"))
+                Err(windows::core::Error::new(
+                    HRESULT(0),
+                    "Missing render target",
+                ))
             }
         }
     }
@@ -498,15 +508,15 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                         | InputResult::Zoom
                         | InputResult::Scroll => {
                             if options.should_capture_all_input
-                                || overlay_handler.egui_ctx.wants_pointer_input()
-                                || overlay_handler.egui_ctx.is_pointer_over_area()
+                                || (overlay_handler.egui_ctx.wants_pointer_input()
+                                || overlay_handler.egui_ctx.is_pointer_over_area())
                             {
                                 return LRESULT(1);
                             }
                         }
                         InputResult::Character | InputResult::Key => {
                             if options.should_capture_all_input
-                                || overlay_handler.egui_ctx.wants_keyboard_input()
+                                && overlay_handler.egui_ctx.wants_keyboard_input()
                             {
                                 return LRESULT(1);
                             }
@@ -515,21 +525,19 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                     }
 
                     if let Some(wnd_msg) = options.window_message {
-                        let res = unsafe {
-                            (inner.window_process_callback)(
-                                hwnd,
-                                wnd_msg.msg,
-                                wnd_msg.wparam,
-                                wnd_msg.lparam,
-                            )
-                        };
-
                         if options.should_process_original_message {
                             return unsafe {
                                 (inner.window_process_callback)(hwnd, umsg, wparam, lparam)
                             };
                         } else {
-                            return res;
+                            return unsafe {
+                                (inner.window_process_callback)(
+                                    hwnd,
+                                    wnd_msg.msg,
+                                    wnd_msg.wparam,
+                                    wnd_msg.lparam,
+                                )
+                            };
                         }
                     }
                 }
