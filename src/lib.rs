@@ -66,9 +66,17 @@ struct OverlayHandler<T: Overlay + ?Sized> {
 
 #[derive(Default)]
 pub struct WindowMessage {
+    pub hwnd: HWND,
     pub msg: u32,
     pub wparam: WPARAM,
     pub lparam: LPARAM,
+}
+
+pub struct PostRenderContext<'a> {
+    pub hwnd: HWND,
+    pub device_context: &'a ID3D11DeviceContext,
+    pub render_target: &'a ID3D11RenderTargetView,
+    pub pixels_per_point: f32,
 }
 
 #[derive(Default)]
@@ -81,6 +89,10 @@ pub struct WindowProcessOptions {
     /// ``Context::wants_pointer_input`` or ``Context::wants_keyboard_input`` by default.
     /// This flag will allow the underlying window to capture the input as well.
     pub should_input_pass_through: bool,
+    /// Capture pointer input regardless of the host egui context focus state.
+    pub capture_pointer_input: bool,
+    /// Capture keyboard input regardless of the host egui context focus state.
+    pub capture_keyboard_input: bool,
     /// Optional ``WindowMessage`` that will be processed as well.
     pub window_message: Option<WindowMessage>,
     /// If ``Some(self.window_message)``, then ``self.window_message`` will only be processed and not the original window message by default.
@@ -90,6 +102,7 @@ pub struct WindowProcessOptions {
 
 pub trait Overlay {
     fn update(&mut self, ctx: &egui::Context);
+    fn post_render(&mut self, _ctx: PostRenderContext<'_>) {}
     fn resize_buffers(
         &mut self,
         swap_chain_vtbl: *const IDXGISwapChain_Vtbl,
@@ -104,6 +117,7 @@ pub trait Overlay {
         &mut self,
         input: &InputResult,
         input_events: &Vec<egui::Event>,
+        message: &WindowMessage,
     ) -> Option<WindowProcessOptions> {
         None
     }
@@ -114,6 +128,11 @@ impl<T: Overlay + ?Sized> Overlay for Box<T> {
     #[inline]
     fn update(&mut self, ctx: &egui::Context) {
         (**self).update(ctx);
+    }
+
+    #[inline]
+    fn post_render(&mut self, ctx: PostRenderContext<'_>) {
+        (**self).post_render(ctx);
     }
 
     #[inline]
@@ -146,8 +165,9 @@ impl<T: Overlay + ?Sized> Overlay for Box<T> {
         &mut self,
         input: &InputResult,
         input_events: &Vec<egui::Event>,
+        message: &WindowMessage,
     ) -> Option<WindowProcessOptions> {
-        (**self).window_process(input, input_events)
+        (**self).window_process(input, input_events, message)
     }
 }
 
@@ -313,6 +333,13 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                     renderer_output,
                     1.0,
                 );
+
+                self.overlay.post_render(PostRenderContext {
+                    hwnd: inner.hwnd,
+                    device_context: &inner.device_context,
+                    render_target,
+                    pixels_per_point: self.egui_ctx.pixels_per_point(),
+                });
 
                 self.backup.restore(&inner.device_context);
             } else {
@@ -480,6 +507,12 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
         if let Some(overlay_handler) = unsafe { &mut *overlay_handler } {
             if let Some(inner) = &mut overlay_handler.inner {
                 let input = inner.input_handler.process(umsg, wparam.0, lparam.0);
+                let message = WindowMessage {
+                    hwnd,
+                    msg: umsg,
+                    wparam,
+                    lparam,
+                };
 
                 if umsg == WM_CLOSE {
                     overlay_handler
@@ -490,7 +523,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
 
                 if let Some(options) = overlay_handler
                     .overlay
-                    .window_process(&input, &inner.input_handler.events)
+                    .window_process(&input, &inner.input_handler.events, &message)
                 {
                     // If user doesn't want to steal the input
                     if options.should_input_pass_through {
@@ -507,7 +540,8 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                         | InputResult::MouseMiddle
                         | InputResult::Zoom
                         | InputResult::Scroll => {
-                            if options.should_capture_all_input
+                            if options.capture_pointer_input
+                                || options.should_capture_all_input
                                 || (overlay_handler.egui_ctx.wants_pointer_input()
                                 || overlay_handler.egui_ctx.is_pointer_over_area())
                             {
@@ -515,8 +549,9 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                             }
                         }
                         InputResult::Character | InputResult::Key => {
-                            if options.should_capture_all_input
-                                && overlay_handler.egui_ctx.wants_keyboard_input()
+                            if options.capture_keyboard_input
+                                || (options.should_capture_all_input
+                                    && overlay_handler.egui_ctx.wants_keyboard_input())
                             {
                                 return LRESULT(1);
                             }
