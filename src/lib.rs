@@ -263,8 +263,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                         ..Default::default()
                     };
                     if unsafe { GetMonitorInfoW(monitor, &mut monitor_info) }.as_bool() == false {
-                        let e = windows::core::Error::from_win32();
-                        log::warn!("GetMonitorInfoW failed: {:?}", e);
+                        log::warn!("GetMonitorInfoW failed");
                     }
                     let width = monitor_info.rcMonitor.right - monitor_info.rcMonitor.left;
                     let height = monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top;
@@ -328,10 +327,9 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
 
                 let _ = inner.egui_renderer.render(
                     &inner.device_context,
-                    &render_target,
+                    render_target,
                     &self.egui_ctx,
                     renderer_output,
-                    1.0,
                 );
 
                 self.overlay.post_render(PostRenderContext {
