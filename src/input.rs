@@ -2,16 +2,13 @@
 use arboard::Clipboard;
 use egui::{
     Context, Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, RawInput, Rect, Theme,
-    TouchId, Vec2,
+    TouchId, Vec2, ViewportId,
 };
 use windows::{
     Wdk::System::SystemInformation::NtQuerySystemTime,
     Win32::{
         Foundation::{HWND, RECT},
-        Graphics::Gdi::{
-            GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
-            ScreenToClient,
-        },
+        Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST, ScreenToClient},
         System::SystemServices::{MK_CONTROL, MK_SHIFT},
         UI::{
             Input::{
@@ -344,16 +341,33 @@ impl InputHandler {
         }
     }
 
-    pub fn collect_input(&mut self) -> RawInput {
-        RawInput {
+    pub fn collect_input(&mut self, effective_ppp: f32) -> RawInput {
+        let mut rect = RECT::default();
+        unsafe {
+            GetClientRect(self.hwnd, &mut rect).unwrap();
+        }
+        let physical_size = Vec2::new(
+            (rect.right - rect.left) as f32,
+            (rect.bottom - rect.top) as f32,
+        );
+
+        let mut raw_input = RawInput {
             modifiers: self.modifiers.unwrap_or_default(),
             events: self.events.drain(..).collect::<Vec<Event>>(),
-            screen_rect: Some(self.get_window_rect()),
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, physical_size / effective_ppp)),
             time: Some(Self::get_system_time()),
             system_theme: Self::get_system_theme(),
             focused: true,
             ..Default::default()
-        }
+        };
+
+        raw_input
+            .viewports
+            .entry(ViewportId::ROOT)
+            .or_default()
+            .native_pixels_per_point = Some(effective_ppp);
+
+        raw_input
     }
 
     /// Returns time in seconds.
@@ -378,6 +392,23 @@ impl InputHandler {
                 dark_light::Mode::Unspecified => None,
             },
             Err(_) => None,
+        }
+    }
+
+    #[inline]
+    pub fn get_pixels_per_point(hwnd: HWND) -> f32 {
+        let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+
+        match unsafe { GetScaleFactorForMonitor(monitor) } {
+            Ok(scale) if scale.0 > 0 => scale.0 as f32 / 100.0,
+            Ok(_) => 1.0,
+            Err(err) => {
+                log::warn!(
+                    "GetScaleFactorForMonitor failed: {:?}. Defaulting pixels_per_point to 1.0.",
+                    err
+                );
+                1.0
+            }
         }
     }
 
