@@ -89,6 +89,9 @@ struct InnerState {
 impl InnerState {
     #[inline]
     pub unsafe fn save(&mut self, ctx: &ID3D11DeviceContext) {
+        self.scissor_count = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+        self.viewport_count = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+
         ctx.RSGetScissorRects(
             &mut self.scissor_count,
             Some(self.scissor_rects.as_mut_ptr()),
@@ -145,12 +148,20 @@ impl InnerState {
 
     #[inline]
     pub unsafe fn restore(&mut self, ctx: &ID3D11DeviceContext) {
-        ctx.RSSetScissorRects(Some(
-            &self.scissor_rects.as_slice()[..],
-        ));
-        ctx.RSSetViewports(Some(
-            &self.viewports.as_slice()[..],
-        ));
+        let scissor_count = self.scissor_count as usize;
+        if scissor_count == 0 {
+            ctx.RSSetScissorRects(None);
+        } else {
+            ctx.RSSetScissorRects(Some(&self.scissor_rects.as_slice()[..scissor_count]));
+        }
+
+        let viewport_count = self.viewport_count as usize;
+        if viewport_count == 0 {
+            ctx.RSSetViewports(None);
+        } else {
+            ctx.RSSetViewports(Some(&self.viewports.as_slice()[..viewport_count]));
+        }
+
         ctx.RSSetState(self.raster_state.take().as_ref());
         ctx.OMSetBlendState(
             self.blend_state.take().as_ref(),
