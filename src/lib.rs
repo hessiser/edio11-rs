@@ -8,11 +8,11 @@ use std::{mem, sync::Once};
 use arboard::{Clipboard, ImageData};
 use backup::BackupState;
 use detour::static_detour;
-use egui::{Context, Memory, PlatformOutput, Vec2, gui_zoom::kb_shortcuts};
+use egui::{Context, Memory, PlatformOutput, RawInput, Vec2, gui_zoom::kb_shortcuts};
 use errors::OverlayError;
 use input::{InputHandler, InputResult};
 use windows::Win32::UI::WindowsAndMessaging::{
-    WM_DESTROY, WM_ENDSESSION, WM_QUERYENDSESSION, WM_SYSCOMMAND,
+    SC_CLOSE, WM_DESTROY, WM_ENDSESSION, WM_QUERYENDSESSION, WM_SYSCOMMAND,
 };
 use windows::{
     Win32::{
@@ -65,6 +65,7 @@ struct OverlayHandler<T: Overlay + ?Sized> {
     overlay: Box<T>,
     zoom_factor: f32,
     pixels_per_point: f32,
+    state_saved: bool,
 }
 
 #[derive(Default)]
@@ -92,7 +93,7 @@ pub struct WindowProcessOptions {
 }
 
 pub trait Overlay {
-    fn update(&mut self, ctx: &egui::Context);
+    fn ui(&mut self, ui: &mut egui::Ui);
     #[allow(unused_variables)]
     fn resize_buffers(
         &mut self,
@@ -113,13 +114,17 @@ pub trait Overlay {
         None
     }
     #[allow(unused_variables)]
+    fn raw_input_hook(&mut self, ctx: &Context, raw_input: &mut RawInput) {}
+    #[allow(unused_variables)]
     fn save(&mut self, storage: &mut Memory) {}
+    #[allow(unused_variables)]
+    fn on_exit(&mut self, gl: Option<&Context>) {}
 }
 
 impl<T: Overlay + ?Sized> Overlay for Box<T> {
     #[inline]
-    fn update(&mut self, ctx: &egui::Context) {
-        (**self).update(ctx);
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        (**self).ui(ui);
     }
 
     #[inline]
@@ -142,17 +147,27 @@ impl<T: Overlay + ?Sized> Overlay for Box<T> {
         );
     }
     #[inline]
-    fn save(&mut self, storage: &mut Memory) {
-        (**self).save(storage);
-    }
-
-    #[inline]
     fn window_process(
         &mut self,
         input: &InputResult,
         input_events: &Vec<egui::Event>,
     ) -> Option<WindowProcessOptions> {
         (**self).window_process(input, input_events)
+    }
+
+    #[inline]
+    fn raw_input_hook(&mut self, ctx: &Context, raw_input: &mut RawInput) {
+        (**self).raw_input_hook(ctx, raw_input);
+    }
+
+    #[inline]
+    fn save(&mut self, storage: &mut Memory) {
+        (**self).save(storage);
+    }
+
+    #[inline]
+    fn on_exit(&mut self, gl: Option<&Context>) {
+        (**self).on_exit(gl);
     }
 }
 
@@ -279,9 +294,10 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                         .set_pixels_per_point(self.pixels_per_point * self.zoom_factor);
                 }
 
-                let egui_output = self
-                    .egui_ctx
-                    .run(inner.input_handler.collect_input(), |ctx| {
+                let mut raw_input = inner.input_handler.collect_input();
+                self.overlay.raw_input_hook(&self.egui_ctx, &mut raw_input);
+
+                let egui_output = self.egui_ctx.run(raw_input, |ctx| {
                         if ctx.input_mut(|i| i.consume_shortcut(&kb_shortcuts::ZOOM_RESET)) {
                             self.zoom_factor = 1.0;
                             self.egui_ctx.set_zoom_factor(self.zoom_factor);
@@ -306,7 +322,9 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                             }
                         }
 
-                        self.overlay.update(ctx);
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            self.overlay.ui(ui);
+                        });
                     });
 
                 self.backup.save(&inner.device_context);
@@ -487,30 +505,25 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
 
         if let Some(overlay_handler) = unsafe { &mut *overlay_handler } {
             if let Some(inner) = &mut overlay_handler.inner {
-                let input = inner.input_handler.process(umsg, wparam.0, lparam.0);
-
                 // Handle close-like messages so we can save state before the window closes.
-                // WM_QUIT is a thread message and not dispatched to window procs, so we
-                // explicitly handle WM_CLOSE, WM_DESTROY, syscommands for SC_CLOSE and
-                // session end messages as well.
-                let is_sys_close = if umsg == WM_SYSCOMMAND {
-                    // SC_CLOSE == 0xF060 (mask high bits per Win32 docs)
-                    (wparam.0 as usize & 0xfff0) == 0xF060
-                } else {
-                    false
-                };
+                // WM_QUIT is a thread message and is not dispatched to window procedures.
+                let is_close_message = matches!(
+                    umsg,
+                    WM_CLOSE | WM_DESTROY | WM_QUERYENDSESSION | WM_ENDSESSION
+                ) || (umsg == WM_SYSCOMMAND && (wparam.0 & 0xfff0) == SC_CLOSE as usize);
 
-                if umsg == WM_CLOSE
-                    || umsg == WM_DESTROY
-                    || umsg == WM_QUERYENDSESSION
-                    || umsg == WM_ENDSESSION
-                    || is_sys_close
-                {
-                    overlay_handler
-                        .egui_ctx
-                        .memory_mut(|writer| overlay_handler.overlay.save(writer));
+                if is_close_message {
+                    if !overlay_handler.state_saved {
+                        overlay_handler
+                            .egui_ctx
+                            .memory_mut(|writer| overlay_handler.overlay.save(writer));
+                        overlay_handler.overlay.on_exit(Some(&overlay_handler.egui_ctx));
+                        overlay_handler.state_saved = true;
+                    }
                     return unsafe { (inner.window_process_callback)(hwnd, umsg, wparam, lparam) };
                 }
+
+                let input = inner.input_handler.process(umsg, wparam.0, lparam.0);
 
                 if let Some(options) = overlay_handler
                     .overlay
@@ -615,6 +628,7 @@ pub fn set_overlay(
                 overlay: Box::new(overlay),
                 zoom_factor: 1.0,
                 pixels_per_point: 1.0,
+                state_saved: false,
             };
             OVERLAY_HANDLER = Some(overlay_handler);
             if let Err(e) = Present_Detour.initialize(
