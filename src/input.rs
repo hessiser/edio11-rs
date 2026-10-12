@@ -8,26 +8,22 @@ use windows::{
     Wdk::System::SystemInformation::NtQuerySystemTime,
     Win32::{
         Foundation::{HWND, RECT},
-        Graphics::Gdi::{
-            GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
-            ScreenToClient,
-        },
+        Graphics::Gdi::
+            ScreenToClient
+        ,
         System::SystemServices::{MK_CONTROL, MK_SHIFT},
         UI::{
             Input::{
                 KeyboardAndMouse::{
-                    GetAsyncKeyState, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END,
-                    VK_ESCAPE, VK_HOME, VK_INSERT, VK_LEFT, VK_LSHIFT, VK_NEXT, VK_PRIOR,
-                    VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB, VK_UP,
+                    GetAsyncKeyState, VK_CONTROL, VK_LSHIFT,
                 },
                 Pointer::{
-                    GetPointerInfo, POINTER_BUTTON_CHANGE_TYPE, POINTER_FLAG_FIRSTBUTTON,
+                    GetPointerInfo, POINTER_FLAG_FIRSTBUTTON,
                     POINTER_FLAG_SECONDBUTTON, POINTER_INFO,
                 },
             },
-            Shell::GetScaleFactorForMonitor,
             WindowsAndMessaging::{
-                GetClientRect, GetMessageExtraInfo, KF_REPEAT, PT_MOUSE, PT_TOUCH, WHEEL_DELTA,
+                GetClientRect, KF_REPEAT, PT_MOUSE, PT_TOUCH, WHEEL_DELTA,
                 WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
                 WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
                 WM_MOUSEWHEEL, WM_NCMOUSEMOVE, WM_POINTERDOWN, WM_POINTERUP, WM_POINTERUPDATE,
@@ -168,7 +164,6 @@ impl InputHandler {
                             InputResult::MouseMiddle
                         }
                         PointerButton::Secondary => InputResult::MouseRight,
-                        _ => InputResult::Unknown,
                     }
                 }
             }

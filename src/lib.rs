@@ -1,17 +1,19 @@
-#![feature(fn_traits)]
 mod backup;
 mod errors;
 pub mod input;
+mod overlay;
 
 use std::{mem, sync::Once};
 
 use arboard::{Clipboard, ImageData};
 use backup::BackupState;
-use egui::{Context, Memory, PlatformOutput, RawInput, Vec2, gui_zoom::kb_shortcuts};
+use detour::static_detour;
+use egui::{Context, Memory, PlatformOutput, Vec2, gui_zoom::kb_shortcuts};
 use errors::OverlayError;
 use input::{InputHandler, InputResult};
-use retour::static_detour;
-use windows::core::HSTRING;
+use windows::Win32::UI::WindowsAndMessaging::{
+    WM_DESTROY, WM_ENDSESSION, WM_QUERYENDSESSION, WM_SYSCOMMAND,
+};
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
@@ -20,7 +22,7 @@ use windows::{
                 D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView,
                 ID3D11Texture2D,
             },
-            Dxgi::{Common::DXGI_FORMAT, DXGI_PRESENT, IDXGISwapChain, IDXGISwapChain_Vtbl},
+            Dxgi::{Common::DXGI_FORMAT, DXGI_PRESENT, IDXGISwapChain},
             Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow},
         },
         UI::{
@@ -35,9 +37,9 @@ use windows::{
 static mut OVERLAY_HANDLER: Option<OverlayHandler<Box<dyn Overlay>>> = None;
 
 static_detour! {
-    pub static Present_Detour: unsafe extern "stdcall" fn(*const IDXGISwapChain_Vtbl, u32, DXGI_PRESENT) -> HRESULT;
+    pub static Present_Detour: fn(IDXGISwapChain, u32, DXGI_PRESENT) -> HRESULT;
     pub static Resize_Buffers_Detour: fn(
-        *const IDXGISwapChain_Vtbl,
+        IDXGISwapChain,
         u32,
         u32,
         u32,
@@ -62,6 +64,7 @@ struct OverlayHandler<T: Overlay + ?Sized> {
     backup: BackupState,
     overlay: Box<T>,
     zoom_factor: f32,
+    pixels_per_point: f32,
 }
 
 #[derive(Default)]
@@ -90,9 +93,10 @@ pub struct WindowProcessOptions {
 
 pub trait Overlay {
     fn update(&mut self, ctx: &egui::Context);
+    #[allow(unused_variables)]
     fn resize_buffers(
         &mut self,
-        swap_chain_vtbl: *const IDXGISwapChain_Vtbl,
+        swap_chain: IDXGISwapChain,
         buffer_count: u32,
         width: u32,
         height: u32,
@@ -100,6 +104,7 @@ pub trait Overlay {
         swap_chain_flags: u32,
     ) {
     }
+    #[allow(unused_variables)]
     fn window_process(
         &mut self,
         input: &InputResult,
@@ -107,7 +112,8 @@ pub trait Overlay {
     ) -> Option<WindowProcessOptions> {
         None
     }
-    fn save(&mut self, _storage: &mut Memory) {}
+    #[allow(unused_variables)]
+    fn save(&mut self, storage: &mut Memory) {}
 }
 
 impl<T: Overlay + ?Sized> Overlay for Box<T> {
@@ -119,7 +125,7 @@ impl<T: Overlay + ?Sized> Overlay for Box<T> {
     #[inline]
     fn resize_buffers(
         &mut self,
-        swap_chain_vtbl: *const IDXGISwapChain_Vtbl,
+        swap_chain: IDXGISwapChain,
         buffer_count: u32,
         width: u32,
         height: u32,
@@ -127,7 +133,7 @@ impl<T: Overlay + ?Sized> Overlay for Box<T> {
         swap_chain_flags: u32,
     ) {
         (**self).resize_buffers(
-            swap_chain_vtbl,
+            swap_chain,
             buffer_count,
             width,
             height,
@@ -135,10 +141,9 @@ impl<T: Overlay + ?Sized> Overlay for Box<T> {
             swap_chain_flags,
         );
     }
-
     #[inline]
-    fn save(&mut self, _storage: &mut Memory) {
-        (**self).save(_storage);
+    fn save(&mut self, storage: &mut Memory) {
+        (**self).save(storage);
     }
 
     #[inline]
@@ -202,7 +207,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                 mem::transmute(SetWindowLongPtrW(
                     hwnd,
                     GWLP_WNDPROC,
-                    Self::window_process_hook as usize as _,
+                    Self::window_process_hook as *const () as usize as _,
                 ))
             };
 
@@ -222,7 +227,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
     pub fn present(&mut self) {
         if let Some(inner) = &mut self.inner {
             if let Some(render_target) = &inner.render_target {
-                let pixels_per_point = unsafe {
+                let measured_pixels_per_point = unsafe {
                     let monitor = MonitorFromWindow(inner.hwnd, MONITOR_DEFAULTTONEAREST);
 
                     // Scale
@@ -242,7 +247,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                         cbSize: size_of::<MONITORINFO>() as _,
                         ..Default::default()
                     };
-                    if unsafe { GetMonitorInfoW(monitor, &mut monitor_info) }.as_bool() == false {
+                    if GetMonitorInfoW(monitor, &mut monitor_info).as_bool() == false {
                         let e = windows::core::Error::from_win32();
                         log::warn!("GetMonitorInfoW failed: {:?}", e);
                     }
@@ -250,9 +255,9 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                     let height = monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top;
                     let screen_size = Vec2::new(width as f32, height as f32);
 
-                    // Window Size
+                    // App window Size
                     let mut rect = RECT::default();
-                    if let Err(e) = unsafe { GetClientRect(inner.hwnd, &mut rect) } {
+                    if let Err(e) = GetClientRect(inner.hwnd, &mut rect) {
                         log::warn!("GetClientRect failed: {:?}", e);
                     }
 
@@ -265,9 +270,13 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                     scale_factor as f32 * res_scale
                 };
 
-                if pixels_per_point > 0.0 {
+                if measured_pixels_per_point.is_finite() && measured_pixels_per_point > 0.0 {
+                    self.pixels_per_point = measured_pixels_per_point;
+                }
+
+                if self.pixels_per_point > 0.0 {
                     self.egui_ctx
-                        .set_pixels_per_point(pixels_per_point * self.zoom_factor);
+                        .set_pixels_per_point(self.pixels_per_point * self.zoom_factor);
                 }
 
                 let egui_output = self
@@ -304,7 +313,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
 
                 let (renderer_output, platform_output, _) =
                     egui_directx11::split_output(egui_output);
-                Self::handle_platform_output(&self.egui_ctx, platform_output);
+                Self::handle_platform_output(platform_output);
 
                 let _ = inner.egui_renderer.render(
                     &inner.device_context,
@@ -326,8 +335,8 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
     }
 
     // Only supporting WindowsOS
-    fn handle_platform_output(ctx: &egui::Context, platform_output: PlatformOutput) {
-        let mut clipboard = match Clipboard::new() {
+    fn handle_platform_output(platform_output: PlatformOutput) {
+        let mut clipboard: Option<Clipboard> = match Clipboard::new() {
             Ok(cb) => Some(cb),
             Err(e) => {
                 log::warn!("Clipboard not available: {:?}", e);
@@ -414,24 +423,24 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
 
     // Hooked function
     fn present_hook(
-        swap_chain_vtbl: *const IDXGISwapChain_Vtbl,
+        swap_chain: IDXGISwapChain,
         sync_interval: u32,
         flags: DXGI_PRESENT,
     ) -> HRESULT {
         let overlay_handler = &raw mut OVERLAY_HANDLER;
         if let Some(overlay_handler) = unsafe { &mut *overlay_handler } {
-            overlay_handler.lazy_initialize(unsafe { mem::transmute(&swap_chain_vtbl) });
+            overlay_handler.lazy_initialize(&swap_chain);
             overlay_handler.present()
         } else {
             let error = "`OverlayHandler::present_hook` Error: OVERLAY_HANDLER was not initialized";
             log::error!("{}", error);
         }
-        unsafe { Present_Detour.call(swap_chain_vtbl, sync_interval, flags) }
+        Present_Detour.call(swap_chain, sync_interval, flags)
     }
 
     // Hooked function
     fn resize_buffers_hook(
-        swap_chain_vtbl: *const IDXGISwapChain_Vtbl,
+        swap_chain: IDXGISwapChain,
         buffer_count: u32,
         width: u32,
         height: u32,
@@ -443,7 +452,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
             if let Some(inner) = &mut overlay_handler.inner.as_mut() {
                 inner.render_target = None;
                 let result = Resize_Buffers_Detour.call(
-                    swap_chain_vtbl,
+                    swap_chain.clone(),
                     buffer_count,
                     width,
                     height,
@@ -451,7 +460,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                     swap_chain_flags,
                 );
                 overlay_handler.overlay.resize_buffers(
-                    swap_chain_vtbl,
+                    swap_chain.clone(),
                     buffer_count,
                     width,
                     height,
@@ -459,11 +468,10 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                     swap_chain_flags,
                 );
 
-                let swap_chain: &IDXGISwapChain = unsafe { mem::transmute(&swap_chain_vtbl) };
                 let device = unsafe { inner.device_context.GetDevice().unwrap() };
 
                 let render_target = unsafe {
-                    Self::create_render_target_for_swap_chain(&device, swap_chain).unwrap()
+                    Self::create_render_target_for_swap_chain(&device, &swap_chain).unwrap()
                 };
 
                 inner.render_target = Some(render_target);
@@ -481,7 +489,23 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
             if let Some(inner) = &mut overlay_handler.inner {
                 let input = inner.input_handler.process(umsg, wparam.0, lparam.0);
 
-                if umsg == WM_CLOSE {
+                // Handle close-like messages so we can save state before the window closes.
+                // WM_QUIT is a thread message and not dispatched to window procs, so we
+                // explicitly handle WM_CLOSE, WM_DESTROY, syscommands for SC_CLOSE and
+                // session end messages as well.
+                let is_sys_close = if umsg == WM_SYSCOMMAND {
+                    // SC_CLOSE == 0xF060 (mask high bits per Win32 docs)
+                    (wparam.0 as usize & 0xfff0) == 0xF060
+                } else {
+                    false
+                };
+
+                if umsg == WM_CLOSE
+                    || umsg == WM_DESTROY
+                    || umsg == WM_QUERYENDSESSION
+                    || umsg == WM_ENDSESSION
+                    || is_sys_close
+                {
                     overlay_handler
                         .egui_ctx
                         .memory_mut(|writer| overlay_handler.overlay.save(writer));
@@ -509,7 +533,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                         | InputResult::Scroll => {
                             if options.should_capture_all_input
                                 || (overlay_handler.egui_ctx.wants_pointer_input()
-                                || overlay_handler.egui_ctx.is_pointer_over_area())
+                                    || overlay_handler.egui_ctx.is_pointer_over_area())
                             {
                                 return LRESULT(1);
                             }
@@ -550,15 +574,6 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
 
 pub fn set_overlay(
     overlay_creator: Box<dyn FnOnce(Context) -> Box<dyn Overlay>>,
-    present_target: fn(*const IDXGISwapChain_Vtbl, u32, DXGI_PRESENT) -> HRESULT,
-    resize_buffers_target: fn(
-        *const IDXGISwapChain_Vtbl,
-        u32,
-        u32,
-        u32,
-        DXGI_FORMAT,
-        u32,
-    ) -> HRESULT,
 ) -> Result<(), OverlayError> {
     let overlay_handler = &raw mut OVERLAY_HANDLER;
     match unsafe { &*overlay_handler } {
@@ -572,7 +587,23 @@ pub fn set_overlay(
                 }
             });
 
-            let overlay = overlay_creator.call_once((egui_ctx.clone(),));
+            let vtable = overlay::get_vtable().map_err(|e| {
+                log::error!("Failed to find DirectX 11 vtable: {:?}", e);
+                OverlayError::InitializationFailed
+            })?;
+
+            let present_target: fn(IDXGISwapChain, u32, DXGI_PRESENT) -> HRESULT =
+                mem::transmute(vtable[8]);
+            let resize_buffers_target: fn(
+                IDXGISwapChain,
+                u32,
+                u32,
+                u32,
+                DXGI_FORMAT,
+                u32,
+            ) -> HRESULT = mem::transmute(vtable[13]);
+
+            let overlay = overlay_creator(egui_ctx.clone());
             if let Err(e) = EnableMouseInPointer(true) {
                 log::warn!("EnableMouseInPointer failed: {:?}", e);
             }
@@ -583,6 +614,7 @@ pub fn set_overlay(
                 backup: BackupState::default(),
                 overlay: Box::new(overlay),
                 zoom_factor: 1.0,
+                pixels_per_point: 1.0,
             };
             OVERLAY_HANDLER = Some(overlay_handler);
             if let Err(e) = Present_Detour.initialize(
