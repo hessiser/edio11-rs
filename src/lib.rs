@@ -12,7 +12,7 @@ use egui::{Context, Memory, PlatformOutput, RawInput, Vec2, gui_zoom::kb_shortcu
 use errors::OverlayError;
 use input::{InputHandler, InputResult};
 use windows::Win32::UI::WindowsAndMessaging::{
-    SC_CLOSE, WM_DESTROY, WM_ENDSESSION, WM_QUERYENDSESSION, WM_SYSCOMMAND,
+    IsIconic, SC_CLOSE, WM_DESTROY, WM_ENDSESSION, WM_QUERYENDSESSION, WM_SYSCOMMAND,
 };
 use windows::{
     Win32::{
@@ -64,7 +64,6 @@ struct OverlayHandler<T: Overlay + ?Sized> {
     backup: BackupState,
     overlay: Box<T>,
     zoom_factor: f32,
-    pixels_per_point: f32,
     state_saved: bool,
 }
 
@@ -241,63 +240,60 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
 
     pub fn present(&mut self) {
         if let Some(inner) = &mut self.inner {
-            if let Some(render_target) = &inner.render_target {
-                let measured_pixels_per_point = unsafe {
-                    let monitor = MonitorFromWindow(inner.hwnd, MONITOR_DEFAULTTONEAREST);
+            if unsafe { !IsIconic(inner.hwnd).as_bool() } {
+                if let Some(render_target) = &inner.render_target {
+                    let pixels_per_point = unsafe {
+                        let monitor = MonitorFromWindow(inner.hwnd, MONITOR_DEFAULTTONEAREST);
 
-                    // Scale
-                    let scale_factor = match GetScaleFactorForMonitor(monitor) {
-                        Ok(s) => s.0 / 100,
-                        Err(e) => {
-                            log::warn!(
-                                "GetScaleFactorForMonitor failed: {:?}. Defaulting to 100.",
-                                e
-                            );
-                            100
+                        // Scale
+                        let scale_factor = match GetScaleFactorForMonitor(monitor) {
+                            Ok(s) => s.0 / 100,
+                            Err(e) => {
+                                log::warn!(
+                                    "GetScaleFactorForMonitor failed: {:?}. Defaulting to 100.",
+                                    e
+                                );
+                                100
+                            }
+                        };
+
+                        // Screen Size
+                        let mut monitor_info = MONITORINFO {
+                            cbSize: size_of::<MONITORINFO>() as _,
+                            ..Default::default()
+                        };
+                        if GetMonitorInfoW(monitor, &mut monitor_info).as_bool() == false {
+                            let e = windows::core::Error::from_thread();
+                            log::warn!("GetMonitorInfoW failed: {:?}", e);
                         }
+                        let width = monitor_info.rcMonitor.right - monitor_info.rcMonitor.left;
+                        let height = monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top;
+                        let screen_size = Vec2::new(width as f32, height as f32);
+
+                        // App window Size
+                        let mut rect = RECT::default();
+                        if let Err(e) = GetClientRect(inner.hwnd, &mut rect) {
+                            log::warn!("GetClientRect failed: {:?}", e);
+                        }
+
+                        let window_size = Vec2::new(
+                            (rect.right - rect.left) as f32,
+                            (rect.bottom - rect.top) as f32,
+                        );
+
+                        let res_scale = window_size.length() / screen_size.length();
+                        scale_factor as f32 * res_scale
                     };
 
-                    // Screen Size
-                    let mut monitor_info = MONITORINFO {
-                        cbSize: size_of::<MONITORINFO>() as _,
-                        ..Default::default()
-                    };
-                    if GetMonitorInfoW(monitor, &mut monitor_info).as_bool() == false {
-                        let e = windows::core::Error::from_win32();
-                        log::warn!("GetMonitorInfoW failed: {:?}", e);
-                    }
-                    let width = monitor_info.rcMonitor.right - monitor_info.rcMonitor.left;
-                    let height = monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top;
-                    let screen_size = Vec2::new(width as f32, height as f32);
-
-                    // App window Size
-                    let mut rect = RECT::default();
-                    if let Err(e) = GetClientRect(inner.hwnd, &mut rect) {
-                        log::warn!("GetClientRect failed: {:?}", e);
+                    if pixels_per_point.is_finite() && pixels_per_point > 0.0 {
+                        self.egui_ctx
+                            .set_pixels_per_point(pixels_per_point * self.zoom_factor);
                     }
 
-                    let window_size = Vec2::new(
-                        (rect.right - rect.left) as f32,
-                        (rect.bottom - rect.top) as f32,
-                    );
+                    let mut raw_input = inner.input_handler.collect_input();
+                    self.overlay.raw_input_hook(&self.egui_ctx, &mut raw_input);
 
-                    let res_scale = window_size.length() / screen_size.length();
-                    scale_factor as f32 * res_scale
-                };
-
-                if measured_pixels_per_point.is_finite() && measured_pixels_per_point > 0.0 {
-                    self.pixels_per_point = measured_pixels_per_point;
-                }
-
-                if self.pixels_per_point > 0.0 {
-                    self.egui_ctx
-                        .set_pixels_per_point(self.pixels_per_point * self.zoom_factor);
-                }
-
-                let mut raw_input = inner.input_handler.collect_input();
-                self.overlay.raw_input_hook(&self.egui_ctx, &mut raw_input);
-
-                let egui_output = self.egui_ctx.run(raw_input, |ctx| {
+                    let egui_output = self.egui_ctx.run_ui(raw_input, |ctx| {
                         if ctx.input_mut(|i| i.consume_shortcut(&kb_shortcuts::ZOOM_RESET)) {
                             self.zoom_factor = 1.0;
                             self.egui_ctx.set_zoom_factor(self.zoom_factor);
@@ -327,28 +323,28 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                         });
                     });
 
-                self.backup.save(&inner.device_context);
+                    self.backup.save(&inner.device_context);
 
-                let (renderer_output, platform_output, _) =
-                    egui_directx11::split_output(egui_output);
-                Self::handle_platform_output(platform_output);
+                    let (renderer_output, platform_output, _) =
+                        egui_directx11::split_output(egui_output);
+                    Self::handle_platform_output(platform_output);
 
-                let _ = inner.egui_renderer.render(
-                    &inner.device_context,
-                    &render_target,
-                    &self.egui_ctx,
-                    renderer_output,
-                    1.0,
-                );
+                    let _ = inner.egui_renderer.render(
+                        &inner.device_context,
+                        &render_target,
+                        &self.egui_ctx,
+                        renderer_output,
+                    );
 
-                self.backup.restore(&inner.device_context);
+                    self.backup.restore(&inner.device_context);
+                } else {
+                    log::error!("OverylayHander::present unreachable");
+                    unreachable!()
+                }
             } else {
                 log::error!("OverylayHander::present unreachable");
-                unreachable!()
+                unreachable!();
             }
-        } else {
-            log::error!("OverylayHander::present unreachable");
-            unreachable!();
         }
     }
 
@@ -510,14 +506,17 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                 let is_close_message = matches!(
                     umsg,
                     WM_CLOSE | WM_DESTROY | WM_QUERYENDSESSION | WM_ENDSESSION
-                ) || (umsg == WM_SYSCOMMAND && (wparam.0 & 0xfff0) == SC_CLOSE as usize);
+                ) || (umsg == WM_SYSCOMMAND
+                    && (wparam.0 & 0xfff0) == SC_CLOSE as usize);
 
                 if is_close_message {
                     if !overlay_handler.state_saved {
                         overlay_handler
                             .egui_ctx
                             .memory_mut(|writer| overlay_handler.overlay.save(writer));
-                        overlay_handler.overlay.on_exit(Some(&overlay_handler.egui_ctx));
+                        overlay_handler
+                            .overlay
+                            .on_exit(Some(&overlay_handler.egui_ctx));
                         overlay_handler.state_saved = true;
                     }
                     return unsafe { (inner.window_process_callback)(hwnd, umsg, wparam, lparam) };
@@ -545,15 +544,16 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                         | InputResult::Zoom
                         | InputResult::Scroll => {
                             if options.should_capture_all_input
-                                || (overlay_handler.egui_ctx.wants_pointer_input()
-                                    || overlay_handler.egui_ctx.is_pointer_over_area())
+                                || (overlay_handler.egui_ctx.egui_wants_pointer_input()
+                                    || overlay_handler.egui_ctx.is_pointer_over_egui()
+                                    || overlay_handler.egui_ctx.egui_is_using_pointer())
                             {
                                 return LRESULT(1);
                             }
                         }
                         InputResult::Character | InputResult::Key => {
                             if options.should_capture_all_input
-                                && overlay_handler.egui_ctx.wants_keyboard_input()
+                                && overlay_handler.egui_ctx.egui_wants_keyboard_input()
                             {
                                 return LRESULT(1);
                             }
@@ -627,7 +627,6 @@ pub fn set_overlay(
                 backup: BackupState::default(),
                 overlay: Box::new(overlay),
                 zoom_factor: 1.0,
-                pixels_per_point: 1.0,
                 state_saved: false,
             };
             OVERLAY_HANDLER = Some(overlay_handler);

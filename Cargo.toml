@@ -4,8 +4,8 @@ version = "0.1.1"
 edition = "2024"
 
 [dependencies]
-egui = "0.32.0"
-egui-directx11 = "0.10.0"
+egui = "0.35.0"
+egui-directx11 = "0.13.0"
 
 detour = "0.10.0"
 thiserror = "2.0.12"
@@ -13,9 +13,10 @@ arboard = "3.5.0"
 log = "0.4.27"
 dark-light = "2.0.0"
 webbrowser = "1.0.5"
+widestring = "1.2.1"
 
 [dependencies.windows]
-version = "0.61.1"
+version = "0.62.0"
 features = [
     "Win32_Graphics_Gdi",
     "Win32_UI_Shell_Common",

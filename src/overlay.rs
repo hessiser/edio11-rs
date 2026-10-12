@@ -4,7 +4,8 @@ use std::{
     mem::{self},
     ptr::null_mut,
 };
-use windows::Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_11_1};
+use widestring::u16str;
+use windows::{Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_11_1}, core::PCWSTR};
 use windows::{
     Win32::{
         Foundation::HMODULE,
@@ -45,7 +46,7 @@ pub fn get_vtable() -> Result<Box<[usize; 205]>, OverlayError> {
             style: CS_HREDRAW | CS_VREDRAW,
             // This is fine as the wrapper sig matches the imported sig
             lpfnWndProc: Some(mem::transmute(DefWindowProcW as *const c_void)),
-            lpszClassName: w!(""),
+            lpszClassName: PCWSTR::from_raw(u16str!(env!("CARGO_PKG_NAME")).as_ptr()),
             ..Default::default()
         };
 
@@ -54,7 +55,7 @@ pub fn get_vtable() -> Result<Box<[usize; 205]>, OverlayError> {
         let window = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             window_class.lpszClassName,
-            w!(""),
+            PCWSTR::from_raw(u16str!(env!("CARGO_PKG_NAME")).as_ptr()),
             WS_OVERLAPPEDWINDOW,
             0,
             0,

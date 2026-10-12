@@ -1,8 +1,7 @@
 #![allow(dead_code)]
 use arboard::Clipboard;
 use egui::{
-    Context, Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, RawInput, Rect, Theme,
-    TouchId, Vec2,
+    Context, Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, RawInput, Rect, Theme, TouchId, TouchPhase::Move, Vec2,
 };
 use windows::{
     Wdk::System::SystemInformation::NtQuerySystemTime,
@@ -263,6 +262,7 @@ impl InputHandler {
                         unit: MouseWheelUnit::Point,
                         delta: Vec2::new(0., delta),
                         modifiers: get_mouse_modifiers(wparam),
+                        phase: Move,
                     });
                     InputResult::Scroll
                 }
@@ -281,6 +281,7 @@ impl InputHandler {
                         unit: MouseWheelUnit::Point,
                         delta: Vec2::new(delta, 0.),
                         modifiers: get_mouse_modifiers(wparam),
+                        phase: Move,
                     });
                     InputResult::Scroll
                 }
