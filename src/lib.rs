@@ -8,12 +8,11 @@ use std::{mem, sync::Once};
 use arboard::{Clipboard, ImageData};
 use backup::BackupState;
 use detour::static_detour;
-use egui::{Context, Memory, PlatformOutput, RawInput, Vec2, gui_zoom::kb_shortcuts};
+use egui::Ui;
+use egui::{Context, Memory, PlatformOutput, Vec2, gui_zoom::kb_shortcuts};
 use errors::OverlayError;
 use input::{InputHandler, InputResult};
-use windows::Win32::UI::WindowsAndMessaging::{
-    IsIconic, SC_CLOSE, WM_DESTROY, WM_ENDSESSION, WM_QUERYENDSESSION, WM_SYSCOMMAND,
-};
+use windows::Win32::UI::WindowsAndMessaging::IsIconic;
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
@@ -22,7 +21,7 @@ use windows::{
                 D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView,
                 ID3D11Texture2D,
             },
-            Dxgi::{Common::DXGI_FORMAT, DXGI_PRESENT, IDXGISwapChain},
+            Dxgi::{Common::DXGI_FORMAT, DXGI_PRESENT, IDXGISwapChain, IDXGISwapChain_Vtbl},
             Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow},
         },
         UI::{
@@ -33,6 +32,8 @@ use windows::{
     },
     core::HRESULT,
 };
+
+use crate::overlay::get_vtable;
 
 static mut OVERLAY_HANDLER: Option<OverlayHandler<Box<dyn Overlay>>> = None;
 
@@ -64,7 +65,6 @@ struct OverlayHandler<T: Overlay + ?Sized> {
     backup: BackupState,
     overlay: Box<T>,
     zoom_factor: f32,
-    state_saved: bool,
 }
 
 #[derive(Default)]
@@ -92,7 +92,7 @@ pub struct WindowProcessOptions {
 }
 
 pub trait Overlay {
-    fn ui(&mut self, ui: &mut egui::Ui);
+    fn ui(&mut self, ui: &mut Ui);
     #[allow(unused_variables)]
     fn resize_buffers(
         &mut self,
@@ -113,16 +113,12 @@ pub trait Overlay {
         None
     }
     #[allow(unused_variables)]
-    fn raw_input_hook(&mut self, ctx: &Context, raw_input: &mut RawInput) {}
-    #[allow(unused_variables)]
     fn save(&mut self, storage: &mut Memory) {}
-    #[allow(unused_variables)]
-    fn on_exit(&mut self, gl: Option<&Context>) {}
 }
 
 impl<T: Overlay + ?Sized> Overlay for Box<T> {
     #[inline]
-    fn ui(&mut self, ui: &mut egui::Ui) {
+    fn ui(&mut self, ui: &mut Ui) {
         (**self).ui(ui);
     }
 
@@ -145,19 +141,6 @@ impl<T: Overlay + ?Sized> Overlay for Box<T> {
             swap_chain_flags,
         );
     }
-    #[inline]
-    fn window_process(
-        &mut self,
-        input: &InputResult,
-        input_events: &Vec<egui::Event>,
-    ) -> Option<WindowProcessOptions> {
-        (**self).window_process(input, input_events)
-    }
-
-    #[inline]
-    fn raw_input_hook(&mut self, ctx: &Context, raw_input: &mut RawInput) {
-        (**self).raw_input_hook(ctx, raw_input);
-    }
 
     #[inline]
     fn save(&mut self, storage: &mut Memory) {
@@ -165,8 +148,12 @@ impl<T: Overlay + ?Sized> Overlay for Box<T> {
     }
 
     #[inline]
-    fn on_exit(&mut self, gl: Option<&Context>) {
-        (**self).on_exit(gl);
+    fn window_process(
+        &mut self,
+        input: &InputResult,
+        input_events: &Vec<egui::Event>,
+    ) -> Option<WindowProcessOptions> {
+        (**self).window_process(input, input_events)
     }
 }
 
@@ -240,6 +227,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
 
     pub fn present(&mut self) {
         if let Some(inner) = &mut self.inner {
+            // If minimized, don't render the overlay
             if unsafe { !IsIconic(inner.hwnd).as_bool() } {
                 if let Some(render_target) = &inner.render_target {
                     let pixels_per_point = unsafe {
@@ -262,7 +250,8 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                             cbSize: size_of::<MONITORINFO>() as _,
                             ..Default::default()
                         };
-                        if GetMonitorInfoW(monitor, &mut monitor_info).as_bool() == false {
+                        if GetMonitorInfoW(monitor, &mut monitor_info).as_bool() == false
+                        {
                             let e = windows::core::Error::from_thread();
                             log::warn!("GetMonitorInfoW failed: {:?}", e);
                         }
@@ -270,7 +259,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                         let height = monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top;
                         let screen_size = Vec2::new(width as f32, height as f32);
 
-                        // App window Size
+                        // Window Size
                         let mut rect = RECT::default();
                         if let Err(e) = GetClientRect(inner.hwnd, &mut rect) {
                             log::warn!("GetClientRect failed: {:?}", e);
@@ -290,45 +279,47 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                             .set_pixels_per_point(pixels_per_point * self.zoom_factor);
                     }
 
-                    let mut raw_input = inner.input_handler.collect_input();
-                    self.overlay.raw_input_hook(&self.egui_ctx, &mut raw_input);
+                    let egui_output =
+                        self.egui_ctx
+                            .run_ui(inner.input_handler.collect_input(), |ui| {
+                                if ui.input_mut(|i| i.consume_shortcut(&kb_shortcuts::ZOOM_RESET)) {
+                                    self.zoom_factor = 1.0;
+                                    self.egui_ctx.set_zoom_factor(self.zoom_factor);
+                                } else {
+                                    if ui.input_mut(|i| i.consume_shortcut(&kb_shortcuts::ZOOM_IN))
+                                        || ui.input_mut(|i| {
+                                            i.consume_shortcut(&kb_shortcuts::ZOOM_IN_SECONDARY)
+                                        })
+                                    {
+                                        self.zoom_factor += 0.1;
+                                        self.zoom_factor = self
+                                            .zoom_factor
+                                            .clamp(MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR);
+                                        self.zoom_factor = (self.zoom_factor * 10.).round() / 10.;
+                                        self.egui_ctx.set_zoom_factor(self.zoom_factor);
+                                    }
+                                    if ui.input_mut(|i| i.consume_shortcut(&kb_shortcuts::ZOOM_OUT))
+                                    {
+                                        self.zoom_factor -= 0.1;
+                                        self.zoom_factor = self
+                                            .zoom_factor
+                                            .clamp(MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR);
+                                        self.zoom_factor = (self.zoom_factor * 10.).round() / 10.;
+                                        self.egui_ctx.set_zoom_factor(self.zoom_factor);
+                                    }
+                                }
 
-                    let egui_output = self.egui_ctx.run_ui(raw_input, |ctx| {
-                        if ctx.input_mut(|i| i.consume_shortcut(&kb_shortcuts::ZOOM_RESET)) {
-                            self.zoom_factor = 1.0;
-                            self.egui_ctx.set_zoom_factor(self.zoom_factor);
-                        } else {
-                            if ctx.input_mut(|i| i.consume_shortcut(&kb_shortcuts::ZOOM_IN))
-                                || ctx.input_mut(|i| {
-                                    i.consume_shortcut(&kb_shortcuts::ZOOM_IN_SECONDARY)
-                                })
-                            {
-                                self.zoom_factor += 0.1;
-                                self.zoom_factor =
-                                    self.zoom_factor.clamp(MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR);
-                                self.zoom_factor = (self.zoom_factor * 10.).round() / 10.;
-                                self.egui_ctx.set_zoom_factor(self.zoom_factor);
-                            }
-                            if ctx.input_mut(|i| i.consume_shortcut(&kb_shortcuts::ZOOM_OUT)) {
-                                self.zoom_factor -= 0.1;
-                                self.zoom_factor =
-                                    self.zoom_factor.clamp(MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR);
-                                self.zoom_factor = (self.zoom_factor * 10.).round() / 10.;
-                                self.egui_ctx.set_zoom_factor(self.zoom_factor);
-                            }
-                        }
-
-                        egui::CentralPanel::default().show(ctx, |ui| {
-                            self.overlay.ui(ui);
-                        });
-                    });
+                                self.overlay.ui(ui);
+                            });
 
                     self.backup.save(&inner.device_context);
 
-                    let (renderer_output, platform_output, _) =
+                    let (mut renderer_output, platform_output, _) =
                         egui_directx11::split_output(egui_output);
                     Self::handle_platform_output(platform_output);
 
+                    // Set pixels per point to 1.0 for the renderer, since we already scaled the context
+                    renderer_output.pixels_per_point = 1.;
                     let _ = inner.egui_renderer.render(
                         &inner.device_context,
                         &render_target,
@@ -341,16 +332,16 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                     log::error!("OverylayHander::present unreachable");
                     unreachable!()
                 }
-            } else {
-                log::error!("OverylayHander::present unreachable");
-                unreachable!();
             }
+        } else {
+            log::error!("OverylayHander::present unreachable");
+            unreachable!();
         }
     }
 
     // Only supporting WindowsOS
     fn handle_platform_output(platform_output: PlatformOutput) {
-        let mut clipboard: Option<Clipboard> = match Clipboard::new() {
+        let mut clipboard = match Clipboard::new() {
             Ok(cb) => Some(cb),
             Err(e) => {
                 log::warn!("Clipboard not available: {:?}", e);
@@ -443,7 +434,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
     ) -> HRESULT {
         let overlay_handler = &raw mut OVERLAY_HANDLER;
         if let Some(overlay_handler) = unsafe { &mut *overlay_handler } {
-            overlay_handler.lazy_initialize(&swap_chain);
+            overlay_handler.lazy_initialize(unsafe { mem::transmute(&swap_chain) });
             overlay_handler.present()
         } else {
             let error = "`OverlayHandler::present_hook` Error: OVERLAY_HANDLER was not initialized";
@@ -501,28 +492,14 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
 
         if let Some(overlay_handler) = unsafe { &mut *overlay_handler } {
             if let Some(inner) = &mut overlay_handler.inner {
-                // Handle close-like messages so we can save state before the window closes.
-                // WM_QUIT is a thread message and is not dispatched to window procedures.
-                let is_close_message = matches!(
-                    umsg,
-                    WM_CLOSE | WM_DESTROY | WM_QUERYENDSESSION | WM_ENDSESSION
-                ) || (umsg == WM_SYSCOMMAND
-                    && (wparam.0 & 0xfff0) == SC_CLOSE as usize);
+                let input = inner.input_handler.process(umsg, wparam.0, lparam.0);
 
-                if is_close_message {
-                    if !overlay_handler.state_saved {
-                        overlay_handler
-                            .egui_ctx
-                            .memory_mut(|writer| overlay_handler.overlay.save(writer));
-                        overlay_handler
-                            .overlay
-                            .on_exit(Some(&overlay_handler.egui_ctx));
-                        overlay_handler.state_saved = true;
-                    }
+                if umsg == WM_CLOSE {
+                    overlay_handler
+                        .egui_ctx
+                        .memory_mut(|writer| overlay_handler.overlay.save(writer));
                     return unsafe { (inner.window_process_callback)(hwnd, umsg, wparam, lparam) };
                 }
-
-                let input = inner.input_handler.process(umsg, wparam.0, lparam.0);
 
                 if let Some(options) = overlay_handler
                     .overlay
@@ -545,8 +522,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                         | InputResult::Scroll => {
                             if options.should_capture_all_input
                                 || (overlay_handler.egui_ctx.egui_wants_pointer_input()
-                                    || overlay_handler.egui_ctx.is_pointer_over_egui()
-                                    || overlay_handler.egui_ctx.egui_is_using_pointer())
+                                    || overlay_handler.egui_ctx.is_pointer_over_egui())
                             {
                                 return LRESULT(1);
                             }
@@ -600,22 +576,17 @@ pub fn set_overlay(
                 }
             });
 
-            let vtable = overlay::get_vtable().map_err(|e| {
-                log::error!("Failed to find DirectX 11 vtable: {:?}", e);
-                OverlayError::InitializationFailed
-            })?;
-
-            let present_target: fn(IDXGISwapChain, u32, DXGI_PRESENT) -> HRESULT =
+            let vtable = get_vtable()?;
+            let present_target: fn(*const IDXGISwapChain_Vtbl, u32, DXGI_PRESENT) -> HRESULT =
                 mem::transmute(vtable[8]);
             let resize_buffers_target: fn(
-                IDXGISwapChain,
+                *const IDXGISwapChain_Vtbl,
                 u32,
                 u32,
                 u32,
                 DXGI_FORMAT,
                 u32,
             ) -> HRESULT = mem::transmute(vtable[13]);
-
             let overlay = overlay_creator(egui_ctx.clone());
             if let Err(e) = EnableMouseInPointer(true) {
                 log::warn!("EnableMouseInPointer failed: {:?}", e);
@@ -627,7 +598,6 @@ pub fn set_overlay(
                 backup: BackupState::default(),
                 overlay: Box::new(overlay),
                 zoom_factor: 1.0,
-                state_saved: false,
             };
             OVERLAY_HANDLER = Some(overlay_handler);
             if let Err(e) = Present_Detour.initialize(
