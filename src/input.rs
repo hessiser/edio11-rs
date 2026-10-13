@@ -1,33 +1,30 @@
 #![allow(dead_code)]
 use arboard::Clipboard;
 use egui::{
-    Context, Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, RawInput, Rect, Theme, TouchId, TouchPhase::Move, Vec2,
+    Context, Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, RawInput, Rect, Theme,
+    TouchId, TouchPhase::Move, Vec2,
 };
 use windows::{
     Wdk::System::SystemInformation::NtQuerySystemTime,
     Win32::{
         Foundation::{HWND, RECT},
-        Graphics::Gdi::
-            ScreenToClient
-        ,
+        Graphics::Gdi::ScreenToClient,
         System::SystemServices::{MK_CONTROL, MK_SHIFT},
         UI::{
             Input::{
-                KeyboardAndMouse::{
-                    GetAsyncKeyState, VK_CONTROL, VK_LSHIFT,
-                },
+                KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_LSHIFT},
                 Pointer::{
-                    GetPointerInfo, POINTER_FLAG_FIRSTBUTTON,
-                    POINTER_FLAG_SECONDBUTTON, POINTER_INFO,
+                    GetPointerInfo, POINTER_FLAG_FIRSTBUTTON, POINTER_FLAG_SECONDBUTTON,
+                    POINTER_INFO,
                 },
             },
             WindowsAndMessaging::{
-                GetClientRect, KF_REPEAT, PT_MOUSE, PT_TOUCH, WHEEL_DELTA,
-                WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
-                WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
-                WM_MOUSEWHEEL, WM_NCMOUSEMOVE, WM_POINTERDOWN, WM_POINTERUP, WM_POINTERUPDATE,
-                WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
-                WM_XBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1, XBUTTON2,
+                GetClientRect, KF_REPEAT, PT_MOUSE, PT_TOUCH, WHEEL_DELTA, WM_CHAR, WM_KEYDOWN,
+                WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK,
+                WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+                WM_NCMOUSEMOVE, WM_POINTERDOWN, WM_POINTERUP, WM_POINTERUPDATE, WM_RBUTTONDBLCLK,
+                WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDBLCLK,
+                WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1, XBUTTON2,
             },
         },
     },

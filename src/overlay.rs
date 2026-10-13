@@ -5,7 +5,9 @@ use std::{
     ptr::null_mut,
 };
 use widestring::u16str;
-use windows::{Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_11_1}, core::PCWSTR};
+use windows::{
+    Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_11_1}, core::{PCWSTR, w},
+};
 use windows::{
     Win32::{
         Foundation::HMODULE,
@@ -28,12 +30,13 @@ use windows::{
                 IDXGISwapChain,
             },
         },
+        System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
             CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
             RegisterClassExW, UnregisterClassW, WINDOW_EX_STYLE, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
         },
     },
-    core::{Interface, w},
+    core::Interface,
 };
 
 // rdbo Kiero
@@ -41,21 +44,25 @@ use windows::{
 pub fn get_vtable() -> Result<Box<[usize; 205]>, OverlayError> {
     // Initializes a dummy swapchain to get the vtable
     unsafe {
+        let module = GetModuleHandleW(None)?;
         let window_class = WNDCLASSEXW {
             cbSize: mem::size_of::<WNDCLASSEXW>() as _,
             style: CS_HREDRAW | CS_VREDRAW,
+            hInstance: module.into(),
             // This is fine as the wrapper sig matches the imported sig
             lpfnWndProc: Some(mem::transmute(DefWindowProcW as *const c_void)),
-            lpszClassName: PCWSTR::from_raw(u16str!(env!("CARGO_PKG_NAME")).as_ptr()),
+            lpszClassName: w!("edio11"),
             ..Default::default()
         };
 
-        RegisterClassExW(&window_class);
+        if RegisterClassExW(&window_class) == 0 {
+            return Err(OverlayError::Win(windows::core::Error::from_thread()));
+        }
 
         let window = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             window_class.lpszClassName,
-            PCWSTR::from_raw(u16str!(env!("CARGO_PKG_NAME")).as_ptr()),
+            w!("edio11"),
             WS_OVERLAPPEDWINDOW,
             0,
             0,
