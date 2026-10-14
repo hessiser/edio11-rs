@@ -5,6 +5,13 @@ mod overlay;
 
 use std::{mem, sync::Once};
 
+#[cfg(feature = "persistence")]
+use std::{
+    fs::File,
+    io::{Read, Write},
+    path::PathBuf,
+};
+
 use arboard::{Clipboard, ImageData};
 use backup::BackupState;
 use detour::static_detour;
@@ -36,6 +43,8 @@ use windows::{
 use crate::overlay::get_vtable;
 
 static mut OVERLAY_HANDLER: Option<OverlayHandler<Box<dyn Overlay>>> = None;
+#[cfg(feature = "persistence")]
+const PERSISTENCE_FILENAME: &str = "persistence";
 
 static_detour! {
     pub static Present_Detour: fn(IDXGISwapChain, u32, DXGI_PRESENT) -> HRESULT;
@@ -65,6 +74,61 @@ struct OverlayHandler<T: Overlay + ?Sized> {
     backup: BackupState,
     overlay: Box<T>,
     zoom_factor: f32,
+    #[cfg(feature = "persistence")]
+    persistence_path: Option<PathBuf>,
+}
+
+#[cfg(feature = "persistence")]
+fn persistence_path(app_id: &str) -> Option<PathBuf> {
+    use directories::ProjectDirs;
+
+    ProjectDirs::from("", "", app_id)
+        .map(|project_dirs| project_dirs.data_local_dir().join(PERSISTENCE_FILENAME))
+}
+
+#[cfg(feature = "persistence")]
+fn load_memory(path: Option<&PathBuf>, ctx: &Context) {
+    let Some(path) = path else {
+        return;
+    };
+    if !path.exists() {
+        return;
+    }
+
+    let result = (|| {
+        let mut file = File::open(path)?;
+        let mut buffer = String::new();
+        file.read_to_string(&mut buffer)?;
+        let memory = ron::from_str::<Memory>(&buffer)?;
+        ctx.memory_mut(|writer| *writer = memory);
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })();
+    if let Err(error) = result {
+        log::warn!(
+            "Failed to load egui memory from {}: {error}",
+            path.display()
+        );
+    }
+}
+
+#[cfg(feature = "persistence")]
+fn save_memory(path: Option<&PathBuf>, ctx: &Context) {
+    let Some(path) = path else {
+        return;
+    };
+    let result = (|| {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let memory = ctx.memory(|memory| memory.clone());
+        let mut file = File::create(path)?;
+        file.write_all(ron::to_string(&memory)?.as_bytes())?;
+        file.flush()?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })();
+    if let Err(error) = result {
+        log::error!("Failed to save egui memory to {}: {error}", path.display());
+    }
 }
 
 #[derive(Default)]
@@ -494,6 +558,11 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                 let input = inner.input_handler.process(umsg, wparam.0, lparam.0);
 
                 if umsg == WM_CLOSE {
+                    #[cfg(feature = "persistence")]
+                    save_memory(
+                        overlay_handler.persistence_path.as_ref(),
+                        &overlay_handler.egui_ctx,
+                    );
                     overlay_handler
                         .egui_ctx
                         .memory_mut(|writer| overlay_handler.overlay.save(writer));
@@ -560,7 +629,9 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
     }
 }
 
+/// Initializes the overlay and persists egui memory under the provided application id.
 pub fn set_overlay(
+    app_id: &str,
     overlay_creator: Box<dyn FnOnce(Context) -> Box<dyn Overlay>>,
 ) -> Result<(), OverlayError> {
     let overlay_handler = &raw mut OVERLAY_HANDLER;
@@ -574,6 +645,13 @@ pub fn set_overlay(
                     opts.fallback_theme = theme
                 }
             });
+            #[cfg(feature = "persistence")]
+            let persistence_path = persistence_path(app_id);
+            #[cfg(not(feature = "persistence"))]
+            let _ = app_id;
+            #[cfg(feature = "persistence")]
+            load_memory(persistence_path.as_ref(), &egui_ctx);
+            let zoom_factor = egui_ctx.options(|r| r.zoom_factor);
 
             let vtable = get_vtable()?;
             let present_target: fn(*const IDXGISwapChain_Vtbl, u32, DXGI_PRESENT) -> HRESULT =
@@ -596,7 +674,9 @@ pub fn set_overlay(
                 egui_ctx,
                 backup: BackupState::default(),
                 overlay: Box::new(overlay),
-                zoom_factor: 1.0,
+                zoom_factor,
+                #[cfg(feature = "persistence")]
+                persistence_path,
             };
             OVERLAY_HANDLER = Some(overlay_handler);
             if let Err(e) = Present_Detour.initialize(
