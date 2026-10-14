@@ -27,7 +27,7 @@
 mod texture;
 use texture::TexturePool;
 
-use std::mem;
+use std::{collections::BTreeMap, mem};
 
 const fn zeroed<T>() -> T {
     unsafe { mem::zeroed() }
@@ -86,7 +86,7 @@ pub fn split_output(
 ) -> (
     RendererOutput,
     egui::PlatformOutput,
-    egui::ViewportIdMap<egui::ViewportOutput>,
+    BTreeMap<egui::ViewportId, egui::ViewportOutput>,
 ) {
     (
         RendererOutput {

@@ -250,8 +250,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                             cbSize: size_of::<MONITORINFO>() as _,
                             ..Default::default()
                         };
-                        if GetMonitorInfoW(monitor, &mut monitor_info).as_bool() == false
-                        {
+                        if GetMonitorInfoW(monitor, &mut monitor_info).as_bool() == false {
                             let e = windows::core::Error::from_thread();
                             log::warn!("GetMonitorInfoW failed: {:?}", e);
                         }
@@ -318,13 +317,13 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                         egui_directx11::split_output(egui_output);
                     Self::handle_platform_output(platform_output);
 
-                    // Set pixels per point to 1.0 for the renderer, since we already scaled the context
-                    renderer_output.pixels_per_point = 1.;
+                    // Set scale to 1.0 for the renderer, since we already scaled the context
                     let _ = inner.egui_renderer.render(
                         &inner.device_context,
                         &render_target,
                         &self.egui_ctx,
                         renderer_output,
+                        1.0,
                     );
 
                     self.backup.restore(&inner.device_context);

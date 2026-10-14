@@ -6,7 +6,8 @@ use std::{
 };
 use widestring::u16str;
 use windows::{
-    Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_11_1}, core::{PCWSTR, w},
+    Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_11_1},
+    core::{PCWSTR, w},
 };
 use windows::{
     Win32::{

@@ -34,36 +34,46 @@ struct DemoState {
 }
 
 impl DemoState {
-    fn ui(&mut self, ctx: &egui::Context) {
+    fn ui(&mut self, ui: &mut egui::Ui) {
         let args = env::args().skip(1).collect::<Vec<_>>();
         let args = args.iter().map(String::as_str).collect::<Vec<_>>();
         match &args[..] {
-            [] => self.egui_demo.ui(ctx),
-            ["color-test"] => self.color_test(ctx),
+            [] => self.egui_demo.ui(ui),
+            ["color-test"] => self.color_test(ui),
             _ => panic!("Unknown arguments: {:?}", args),
         }
     }
 
-    fn color_test(&mut self, ctx: &egui::Context) {
+    fn color_test(&mut self, ui: &mut egui::Ui) {
         use egui::Window;
 
         const WINDOW_WIDTH: f32 = 640.0;
 
-        let screen_rect = ctx.input(|input| input.screen_rect);
-        let window_height = screen_rect.height() - 60.0;
+        let screen_rect = ui.ctx().input(|input| input.raw.screen_rect);
+        let window_height = if let Some(screen_rect) = screen_rect {
+            screen_rect.height() - 60.0
+        } else {
+            480.0
+        };
+
+        let pos = if let Some(screen_rect) = screen_rect {
+            screen_rect.center()
+        } else {
+            Pos2::default()
+        };
 
         Window::new("Color Test")
             .resizable(false)
             .collapsible(false)
             .pivot(Align2::CENTER_CENTER)
-            .fixed_pos(screen_rect.center())
+            .fixed_pos(pos)
             .default_width(WINDOW_WIDTH)
             .min_width(WINDOW_WIDTH)
             .max_width(WINDOW_WIDTH)
             .default_height(window_height)
             .min_height(window_height)
             .max_height(window_height)
-            .show(ctx, |ui| {
+            .show(ui.ctx(), |ui| {
                 println!("{:?}", ui.available_size());
                 ScrollArea::vertical()
                     .show(ui, |ui| self.egui_color_test.ui(ui))
@@ -154,8 +164,8 @@ impl DemoApp {
     fn render(&mut self, window: &Window) {
         if let Some(render_target) = &self.render_target {
             let egui_input = self.egui_winit.take_egui_input(window);
-            let egui_output = self.egui_ctx.run(egui_input, |ctx| {
-                self.state.ui(&ctx);
+            let egui_output = self.egui_ctx.run_ui(egui_input, |ui| {
+                self.state.ui(ui);
             });
             let (renderer_output, platform_output, _) =
                 egui_directx11::split_output(egui_output);

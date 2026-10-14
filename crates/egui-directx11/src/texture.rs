@@ -46,31 +46,33 @@ impl TexturePool {
         ctx: &ID3D11DeviceContext,
         delta: TexturesDelta,
     ) -> Result<()> {
-        for (tid, delta) in delta.set {
-            if delta.is_whole()
-                && delta.image.width() > 0
-                && delta.image.height() > 0
-            {
-                self.pool.insert(
-                    tid,
-                    Self::create_texture(&self.device, delta.image)?,
-                );
-                // the old texture is returned and dropped here, freeing
-                // all its gpu resource.
-            } else if let Some(tex) = self.pool.get_mut(&tid) {
-                Self::update_partial(
-                    ctx,
-                    tex,
-                    delta.image,
-                    delta.pos.unwrap(),
-                )?;
-            } else {
-                log::warn!(
-                    "egui wants to update a non-existing texture {tid:?}. this request will be ignored."
-                );
+        let mut delta = delta;
+        for (tid, deltas) in delta.set.drain() {
+            for delta in deltas {
+                if delta.is_whole() {
+                    if delta.image.width() > 0 && delta.image.height() > 0 {
+                        self.pool.insert(
+                            tid,
+                            Self::create_texture(&self.device, delta.image)?,
+                        );
+                        // the old texture is returned and dropped here, freeing
+                        // all its gpu resource.
+                    }
+                } else if let Some(tex) = self.pool.get_mut(&tid) {
+                    Self::update_partial(
+                        ctx,
+                        tex,
+                        delta.image,
+                        delta.pos.unwrap(),
+                    )?;
+                } else {
+                    log::warn!(
+                        "egui wants to update a non-existing texture {tid:?}. this request will be ignored."
+                    );
+                }
             }
         }
-        for tid in delta.free {
+        for tid in delta.free.drain() {
             self.pool.remove(&tid);
         }
         Ok(())

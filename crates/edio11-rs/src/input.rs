@@ -339,7 +339,6 @@ impl InputHandler {
 
     pub fn collect_input(&mut self) -> RawInput {
         RawInput {
-            modifiers: self.modifiers.unwrap_or_default(),
             events: self.events.drain(..).collect::<Vec<Event>>(),
             screen_rect: Some(self.get_window_rect()),
             time: Some(Self::get_system_time()),
