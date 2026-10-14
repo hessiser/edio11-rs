@@ -32,9 +32,17 @@ use windows::{
             Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow},
         },
         UI::{
-            Input::Pointer::EnableMouseInPointer,
+            Input::{
+                KeyboardAndMouse::{ReleaseCapture, SetCapture},
+                Pointer::EnableMouseInPointer,
+            },
             Shell::GetScaleFactorForMonitor,
-            WindowsAndMessaging::{GWLP_WNDPROC, GetClientRect, SetWindowLongPtrW, WM_CLOSE},
+            WindowsAndMessaging::{
+                GWLP_WNDPROC, GetClientRect, SetWindowLongPtrW, WM_CLOSE, WM_LBUTTONDBLCLK,
+                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK,
+                WM_MBUTTONDOWN, WM_MBUTTONUP, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP,
+                WM_XBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONUP,
+            },
         },
     },
     core::HRESULT,
@@ -66,6 +74,7 @@ struct OverlayHandlerInner {
     pub input_handler: InputHandler,
     pub window_process_callback: WNDPROC,
     hwnd: HWND,
+    overlay_mouse_capture: bool,
 }
 
 struct OverlayHandler<T: Overlay + ?Sized> {
@@ -283,6 +292,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                 egui_renderer,
                 input_handler: InputHandler::new(hwnd, &self.egui_ctx),
                 hwnd,
+                overlay_mouse_capture: false,
             };
 
             self.inner = Some(inner);
@@ -557,6 +567,17 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
             if let Some(inner) = &mut overlay_handler.inner {
                 let input = inner.input_handler.process(umsg, wparam.0, lparam.0);
 
+                if matches!(
+                    umsg,
+                    WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP | WM_XBUTTONUP
+                ) && inner.overlay_mouse_capture
+                {
+                    unsafe {
+                        ReleaseCapture().ok();
+                    }
+                    inner.overlay_mouse_capture = false;
+                }
+
                 if umsg == WM_CLOSE {
                     #[cfg(feature = "persistence")]
                     save_memory(
@@ -592,6 +613,22 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                                 || (overlay_handler.egui_ctx.egui_wants_pointer_input()
                                     || overlay_handler.egui_ctx.is_pointer_over_egui())
                             {
+                                if matches!(
+                                    umsg,
+                                    WM_LBUTTONDOWN
+                                        | WM_LBUTTONDBLCLK
+                                        | WM_RBUTTONDOWN
+                                        | WM_RBUTTONDBLCLK
+                                        | WM_MBUTTONDOWN
+                                        | WM_MBUTTONDBLCLK
+                                        | WM_XBUTTONDOWN
+                                        | WM_XBUTTONDBLCLK
+                                ) {
+                                    unsafe {
+                                        SetCapture(hwnd);
+                                    }
+                                    inner.overlay_mouse_capture = true;
+                                }
                                 return LRESULT(1);
                             }
                         }
