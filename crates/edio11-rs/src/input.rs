@@ -260,6 +260,7 @@ impl InputHandler {
                         delta: Vec2::new(0., delta),
                         modifiers: get_mouse_modifiers(wparam),
                         phase: Move,
+                        source: egui::MouseWheelSource::Wheel,
                     });
                     InputResult::Scroll
                 }
@@ -279,6 +280,7 @@ impl InputHandler {
                         delta: Vec2::new(delta, 0.),
                         modifiers: get_mouse_modifiers(wparam),
                         phase: Move,
+                        source: egui::MouseWheelSource::Wheel,
                     });
                     InputResult::Scroll
                 }

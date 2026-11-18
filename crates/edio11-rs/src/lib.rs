@@ -38,10 +38,10 @@ use windows::{
             },
             Shell::GetScaleFactorForMonitor,
             WindowsAndMessaging::{
-                GWLP_WNDPROC, GetClientRect, SetWindowLongPtrW, WM_CLOSE, WM_LBUTTONDBLCLK,
-                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK,
-                WM_MBUTTONDOWN, WM_MBUTTONUP, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP,
-                WM_XBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONUP,
+                GWLP_WNDPROC, GetClientRect, SetWindowLongPtrW, WM_CLOSE, WM_DESTROY,
+                WM_ENDSESSION, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK,
+                WM_MBUTTONDOWN, WM_MBUTTONUP, WM_NCDESTROY, WM_QUERYENDSESSION, WM_RBUTTONDBLCLK,
+                WM_RBUTTONDOWN, WM_RBUTTONUP, WM_XBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONUP,
             },
         },
     },
@@ -458,6 +458,7 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                         log::warn!("Failed to open URL {}: {:?}", open_url.url, e);
                     }
                 }
+                egui::OutputCommand::TextSelectionSettled(_) => {}
             };
         }
     }
@@ -578,15 +579,18 @@ impl<T: Overlay + ?Sized> OverlayHandler<T> {
                     inner.overlay_mouse_capture = false;
                 }
 
-                if umsg == WM_CLOSE {
+                if matches!(
+                    umsg,
+                    WM_CLOSE | WM_DESTROY | WM_NCDESTROY | WM_QUERYENDSESSION | WM_ENDSESSION
+                ) {
+                    overlay_handler
+                        .egui_ctx
+                        .memory_mut(|writer| overlay_handler.overlay.save(writer));
                     #[cfg(feature = "persistence")]
                     save_memory(
                         overlay_handler.persistence_path.as_ref(),
                         &overlay_handler.egui_ctx,
                     );
-                    overlay_handler
-                        .egui_ctx
-                        .memory_mut(|writer| overlay_handler.overlay.save(writer));
                     return unsafe { (inner.window_process_callback)(hwnd, umsg, wparam, lparam) };
                 }
 
